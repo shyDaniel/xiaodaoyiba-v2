@@ -10,3 +10,4 @@ coverage/
 *.tsbuildinfo
 .turbo/
 .cache/
+.playwright-mcp/

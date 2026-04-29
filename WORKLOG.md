@@ -643,3 +643,63 @@ headless game runner, and built out the missing
 from the iter-17 outstanding-work brief (FINAL_GOAL §A1/A2/A3/A4/B2). The
 CI smoke step in `.github/workflows/ci.yml` is no longer a no-op — it now
 exercises the real engine end-to-end.
+
+
+## Iteration 19 — repo-local .mcp.json: visual-validation pipe is first-class (S-246)
+
+**Problem (judge verdict, iter-18):** Both built-in MCPs (`playwright`,
+`chrome-devtools`) errored on first call from the judge session.
+`browser_navigate` returned `Chromium distribution chrome is not found
+at /opt/google/chrome/chrome` (no system Chrome installed).
+`chrome-devtools` returned `Protocol error (Target.setDiscoverTargets):
+Target closed` for the same reason. The judge worked around it by
+hand-rolling a Playwright script with an `LD_LIBRARY_PATH` shim — exactly
+the negligence the rubric flags. UI work past §C1 cannot be validated
+visually until the MCPs work out of the box.
+
+**Root cause:** Both MCPs default to a system Chrome install. This host
+has no system Chrome — only the Playwright-managed Chromium at
+`/home/hanyu/.cache/ms-playwright/chromium-1217/chrome-linux64/chrome`.
+Additionally that binary needs a non-default lib path
+(`/tmp/libs/extracted/usr/lib/x86_64-linux-gnu`) to resolve X11/atk/cups
+deps that the host's default lib search path lacks.
+
+**Fix:** New `.mcp.json` at repo root. Per `agent-autopilot/dist/mcp.js`,
+target-repo `.mcp.json` overrides built-in MCP registrations on name
+collision, so `playwright` and `chrome-devtools` are now repointed:
+- `playwright`: `--executable-path` to the cached Chromium, `--headless
+  --isolated --no-sandbox --viewport-size 1280,800`,
+  `LD_LIBRARY_PATH` + `PLAYWRIGHT_BROWSERS_PATH` set in `env`.
+- `chrome-devtools`: `--executablePath` to same binary, `--headless
+  --isolated --chromeArg=--no-sandbox --chromeArg=--disable-setuid-sandbox
+  --chromeArg=--disable-dev-shm-usage --viewport 1280x800
+  --no-usage-statistics`, `LD_LIBRARY_PATH` set in `env`.
+- `.gitignore` now ignores `.playwright-mcp/` (where playwright-mcp
+  drops its session artifacts inside the workspace).
+
+**Files changed:**
+- `.mcp.json` (new) — both MCPs repointed at the cached Chromium with
+  the LD_LIBRARY_PATH env override.
+- `.gitignore` — added `.playwright-mcp/`.
+
+**Observed (real subprocess probes from this iteration, both MCPs spawned
+exactly as `.mcp.json` declares):**
+- `playwright`: `initialize` returned `Playwright 1.60.0-alpha-...`,
+  `tools/list` returned the full MCP tool surface (`browser_navigate`,
+  `browser_take_screenshot`, …). `browser_navigate http://127.0.0.1:<port>/`
+  succeeded; `browser_take_screenshot type=png filename=.playwright-mcp/mcp-probe.png`
+  returned a **21563-byte PNG** (magic bytes `89 50 4E 47` confirmed)
+  rendering the test HTML at the configured 1280×800 viewport. No
+  "executable not found" error; no LD_LIBRARY_PATH workaround in user
+  code.
+- `chrome-devtools`: `initialize` returned
+  `chrome_devtools v0.23.0`, `tools/list` returned the full surface
+  (`navigate_page`, `take_screenshot`, `performance_start_trace`, …).
+  `new_page url=http://127.0.0.1:<port>/` succeeded with
+  `## Pages\n2: http://127.0.0.1:<port>/ [selected]`.
+
+**Closes verdict bullet:** "MCP gap: playwright + chrome-devtools MCPs
+are listed available but both error on first call". Visual validation is
+now first-class — judge / eval can call `mcp__playwright__browser_navigate`
++ `browser_take_screenshot` directly without a hand-rolled Playwright
+shim, satisfying the §S-246 acceptance test.
