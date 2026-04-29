@@ -1,0 +1,637 @@
+// MultiGame page — the networked headline product surface.
+//
+// Mounts the same PixiJS GameStage as solo mode but consumes round timelines
+// from the server via the Zustand store instead of running the engine in
+// component scope. Flow:
+//
+//   1. The server has emitted RoomSnapshot with phase=PLAYING and the
+//      Lobby route navigated us here.
+//   2. We subscribe to `pendingRounds` in the store. When a new
+//      RoundBroadcast arrives, we await EffectPlayer.play(effects) — the
+//      same call solo mode makes — then shiftRound() to drop it from the
+//      queue.
+//   3. The HandPicker is enabled iff the local player hasn't yet submitted
+//      this round and is alive. On click we call socket.submitChoice().
+//   4. On round resolve, the server schedules the next beginRound; when we
+//      see hasSubmitted flip back to false we re-enable the picker.
+//   5. Game over: snapshot.phase === 'ENDED'. Host sees a "再来一局" button
+//      that emits room:rematch.
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { Effect, PlayerState, RpsChoice } from '@xdyb/shared';
+import {
+  GameStage,
+  type StageController,
+  type StagePlayer,
+} from '../canvas/GameStage.js';
+import { HandPicker } from '../components/HandPicker.js';
+import { BattleLog, type LogEntry, type LogVerb } from '../components/BattleLog.js';
+import { palette, toCss, playerColor } from '../palette.js';
+import {
+  isMuted as audioIsMuted,
+  setMuted as audioSetMuted,
+  setVariant as setBgmVariant,
+  startBgm,
+  stopBgm,
+  play as playSfx,
+  unlockAudio,
+} from '../audio/index.js';
+import {
+  leaveRoom,
+  rematch,
+  selfSocketId,
+  submitChoice as socketSubmitChoice,
+} from '../socket.js';
+import { useGameStore } from '../store/gameStore.js';
+
+type PhaseLabel = 'IDLE' | 'WAIT' | 'ACTION' | 'TIE' | 'OVER';
+
+const PHASE_INFOS: Record<PhaseLabel, { label: string; hint: string }> = {
+  IDLE: { label: '出拳', hint: '点击下方按钮选择石头/剪刀/布' },
+  WAIT: { label: '等待', hint: '等待其他玩家出拳…' },
+  ACTION: { label: '动作', hint: '冲到对方家里！' },
+  TIE: { label: '平局', hint: '再来一次！' },
+  OVER: { label: '终局', hint: '游戏结束' },
+};
+
+export function MultiGamePage(): JSX.Element {
+  const snapshot = useGameStore((s) => s.snapshot);
+  const pendingRounds = useGameStore((s) => s.pendingRounds);
+  const code = useGameStore((s) => s.code);
+  const meId = selfSocketId();
+
+  const [pick, setPick] = useState<RpsChoice | null>(null);
+  const [muted, setMuted] = useState<boolean>(() => audioIsMuted());
+  const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
+  const [animatingRound, setAnimatingRound] = useState<number | null>(null);
+
+  const stageRef = useRef<StageController | null>(null);
+  // Tracks the round the local user last submitted for, so resetting `pick`
+  // lines up with the server's snapshot transition rather than firing
+  // immediately on click.
+  const lastSubmittedRound = useRef<number | null>(null);
+
+  // Mute persistence
+  useEffect(() => {
+    audioSetMuted(muted);
+  }, [muted]);
+
+  // BGM lifecycle: battle on mount, victory/lobby on phase change.
+  useEffect(() => {
+    startBgm('battle');
+    return () => stopBgm();
+  }, []);
+
+  useEffect(() => {
+    if (!snapshot) return;
+    if (snapshot.phase === 'ENDED') {
+      setBgmVariant('victory');
+    } else if (snapshot.phase === 'LOBBY') {
+      setBgmVariant('lobby');
+    } else {
+      setBgmVariant('battle');
+    }
+  }, [snapshot?.phase]);
+
+  // The local user's snapshot row (for hasSubmitted, stage, isHost).
+  const me = useMemo(
+    () => snapshot?.players.find((p) => p.id === meId) ?? null,
+    [snapshot, meId],
+  );
+  const isOver = snapshot?.phase === 'ENDED';
+  const winnerId = snapshot?.winnerId ?? null;
+  const isHost = me?.isHost ?? false;
+  const isSelfDead = me?.stage === 'DEAD';
+
+  // Reset the local pick highlight when the server starts a new round.
+  useEffect(() => {
+    if (!snapshot) return;
+    if (lastSubmittedRound.current !== null && snapshot.round !== lastSubmittedRound.current) {
+      setPick(null);
+      lastSubmittedRound.current = null;
+    }
+  }, [snapshot?.round]);
+
+  // Build PlayerState[] from snapshot for EffectPlayer.play(). We need this
+  // shape (not the snapshot's player rows) because EffectPlayer reads
+  // .stage/.nickname for narration.
+  const playerStatesFromSnapshot = useCallback((): PlayerState[] => {
+    if (!snapshot) return [];
+    return snapshot.players.map((p) => ({
+      id: p.id,
+      nickname: p.nickname,
+      stage: p.stage,
+      isBot: p.isBot,
+    }));
+  }, [snapshot]);
+
+  const stagePlayers: StagePlayer[] = useMemo(
+    () =>
+      snapshot?.players.map((p) => ({
+        id: p.id,
+        nickname: p.nickname,
+        stage: p.stage,
+        isSelf: p.id === meId,
+      })) ?? [],
+    [snapshot, meId],
+  );
+
+  // Drain pending rounds: as new RoundBroadcasts arrive in the store, play
+  // them on the canvas in order, awaiting each before consuming the next.
+  // useRef lock avoids re-entrancy if the store updates mid-play.
+  const drainingRef = useRef(false);
+  useEffect(() => {
+    if (drainingRef.current) return;
+    if (pendingRounds.length === 0) return;
+    let cancelled = false;
+    drainingRef.current = true;
+
+    const drain = async (): Promise<void> => {
+      while (!cancelled) {
+        const head = useGameStore.getState().pendingRounds[0];
+        if (!head) break;
+
+        setAnimatingRound(head.round);
+        const players = playerStatesFromSnapshot();
+
+        const isTie = head.effects.some((e) => e.type === 'TIE_NARRATION');
+
+        const onNarration = (entry: {
+          atMs: number;
+          text: string;
+          verb: '扒' | '砍' | '闪' | '平' | '死';
+          actor?: string;
+          target?: string;
+        }): void => {
+          const actorP = entry.actor
+            ? players.find((p) => p.id === entry.actor)
+            : undefined;
+          const targetP = entry.target
+            ? players.find((p) => p.id === entry.target)
+            : undefined;
+          const actors = isTie
+            ? players.map((p) => `${p.nickname}|${p.id}`)
+            : [actorP, targetP]
+                .filter((p): p is PlayerState => Boolean(p))
+                .map((p) => `${p.nickname}|${p.id}`);
+          const phaseTag = isTie
+            ? 'tie'
+            : entry.verb === '砍'
+            ? 'chop'
+            : 'pull_pants';
+          appendLog(
+            {
+              round: head.round,
+              phase: phaseTag,
+              verb: entry.verb as LogVerb,
+              text: entry.text,
+              actors,
+            },
+            setLogEntries,
+          );
+        };
+
+        const stage = stageRef.current;
+        if (stage) {
+          await stage.play(head.effects, players, { onNarration });
+        } else {
+          // Pixi not ready yet — emit narration synchronously so the panel
+          // still gets the rows, then sit for the canonical duration.
+          for (const eff of head.effects) {
+            if (eff.type === 'TIE_NARRATION') {
+              onNarration({ atMs: 0, text: eff.text, verb: '平' });
+            } else if (eff.type === 'NARRATION') {
+              onNarration({
+                atMs: eff.atMs,
+                text: eff.text,
+                verb: eff.verb,
+                ...(eff.actor !== undefined ? { actor: eff.actor } : {}),
+                ...(eff.target !== undefined ? { target: eff.target } : {}),
+              });
+            }
+          }
+          await new Promise((r) => window.setTimeout(r, isTie ? 2000 : 4000));
+        }
+
+        if (cancelled) break;
+
+        // Reset characters to home after action; on game over also
+        // append the victory row + jingle.
+        const updatedSnap = useGameStore.getState().snapshot;
+        const playerIds = updatedSnap?.players.map((p) => p.id) ?? [];
+        stageRef.current?.reset(playerIds);
+
+        if (head.isGameOver) {
+          const winner = updatedSnap?.players.find((p) => p.id === head.winnerId);
+          if (head.winnerId === meId) {
+            playSfx('victory');
+          } else {
+            playSfx('defeat');
+          }
+          appendLog(
+            {
+              round: head.round,
+              phase: 'over',
+              verb: '胜',
+              text: winner ? `${winner.nickname}赢得了胜利！` : '游戏结束',
+              actors: winner ? [`${winner.nickname}|${winner.id}`] : [],
+            },
+            setLogEntries,
+          );
+        }
+
+        useGameStore.getState().shiftRound();
+        setAnimatingRound(null);
+      }
+      drainingRef.current = false;
+    };
+
+    void drain();
+    return () => {
+      cancelled = true;
+      drainingRef.current = false;
+    };
+  }, [pendingRounds.length, meId, playerStatesFromSnapshot]);
+
+  const onPick = useCallback(
+    (choice: RpsChoice) => {
+      if (!snapshot || snapshot.phase !== 'PLAYING') return;
+      if (!me || me.stage === 'DEAD' || me.hasSubmitted) return;
+      if (animatingRound !== null) return;
+      setPick(choice);
+      lastSubmittedRound.current = snapshot.round;
+      socketSubmitChoice(choice);
+      playSfx('tap');
+    },
+    [snapshot, me, animatingRound],
+  );
+
+  // Derived UI phase label. Server's snapshot.phase is coarse (LOBBY /
+  // PLAYING / ENDED); we synthesize a finer state for the phase pill.
+  const uiPhase: PhaseLabel = useMemo(() => {
+    if (!snapshot) return 'IDLE';
+    if (snapshot.phase === 'ENDED') return 'OVER';
+    if (animatingRound !== null) {
+      // Detect tie vs action by looking at the round-in-flight.
+      const head = pendingRounds[0];
+      if (head && head.effects.some((e) => e.type === 'TIE_NARRATION')) return 'TIE';
+      return 'ACTION';
+    }
+    if (me?.hasSubmitted) return 'WAIT';
+    return 'IDLE';
+  }, [snapshot, animatingRound, pendingRounds, me?.hasSubmitted]);
+
+  if (!snapshot) {
+    return (
+      <div
+        style={{
+          width: '100vw',
+          height: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: '#0b0d12',
+          color: '#cfb978',
+          fontFamily: 'ui-sans-serif, "PingFang SC", sans-serif',
+        }}
+      >
+        加载房间…
+      </div>
+    );
+  }
+
+  const phaseInfo = PHASE_INFOS[uiPhase];
+
+  return (
+    <div
+      style={{
+        position: 'relative',
+        width: '100vw',
+        height: '100vh',
+        overflow: 'hidden',
+        fontFamily: 'ui-sans-serif, "PingFang SC", "Microsoft YaHei", sans-serif',
+      }}
+    >
+      <style>{`
+        @keyframes xdyb-fade-in {
+          from { opacity: 0; transform: translateY(-4px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes xdyb-pulse-gold {
+          0%, 100% { box-shadow: 0 0 0 rgba(247,215,116,0); }
+          50% { box-shadow: 0 0 24px rgba(247,215,116,0.7); }
+        }
+      `}</style>
+
+      <div
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          bottom: 0,
+          right: 'min(30vw, 360px)',
+        }}
+      >
+        <GameStage players={stagePlayers} controllerRef={stageRef} />
+      </div>
+
+      <header
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 'min(30vw, 360px)',
+          padding: '14px 20px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          zIndex: 5,
+          pointerEvents: 'none',
+          background:
+            'linear-gradient(180deg, rgba(11,13,18,0.85) 0%, rgba(11,13,18,0.0) 100%)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <Knife />
+          <h1
+            style={{
+              margin: 0,
+              fontSize: 'clamp(1.4rem, 2.6vw, 2.2rem)',
+              color: toCss(palette.uiGold),
+              letterSpacing: '0.18em',
+              textShadow:
+                '0 3px 0 #6a4012, 0 0 18px rgba(247,215,116,0.45)',
+              fontWeight: 800,
+            }}
+          >
+            小刀一把
+          </h1>
+          <span
+            style={{
+              color: '#cfb978',
+              fontSize: '0.75rem',
+              letterSpacing: '0.18em',
+              fontFamily: 'ui-monospace, monospace',
+            }}
+          >
+            房间 {code}
+          </span>
+        </div>
+
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            pointerEvents: 'auto',
+          }}
+        >
+          <div
+            style={{
+              background: 'rgba(11,13,18,0.7)',
+              border: '2px solid rgba(247,215,116,0.45)',
+              borderRadius: 999,
+              padding: '6px 14px 5px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              color: '#f4ecd8',
+              fontSize: '0.9rem',
+              fontWeight: 700,
+            }}
+          >
+            <span
+              style={{
+                color: toCss(palette.uiGold),
+                fontFamily: 'ui-monospace, monospace',
+                fontWeight: 800,
+              }}
+            >
+              R{snapshot.round || 1}
+            </span>
+            <span style={{ opacity: 0.6 }}>·</span>
+            <span style={{ letterSpacing: '0.1em' }}>{phaseInfo.label}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              unlockAudio();
+              setMuted((m) => !m);
+            }}
+            aria-label={muted ? 'Unmute' : 'Mute'}
+            style={{
+              width: 38,
+              height: 38,
+              borderRadius: '50%',
+              border: '2px solid rgba(247,215,116,0.45)',
+              background: 'rgba(11,13,18,0.7)',
+              color: '#f4ecd8',
+              cursor: 'pointer',
+              fontSize: '1.1rem',
+            }}
+          >
+            {muted ? '🔇' : '🔊'}
+          </button>
+        </div>
+      </header>
+
+      {/* Player roster strip */}
+      <div
+        style={{
+          position: 'absolute',
+          top: 76,
+          left: 16,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 6,
+          zIndex: 5,
+        }}
+      >
+        {snapshot.players.map((p) => {
+          const accent = playerColor(p.id);
+          const dead = p.stage === 'DEAD';
+          const pantsDown = p.stage === 'ALIVE_PANTS_DOWN';
+          return (
+            <div
+              key={p.id}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '4px 10px 4px 6px',
+                borderRadius: 999,
+                background: 'rgba(11,13,18,0.78)',
+                border: `2px solid ${toCss(accent)}`,
+                color: dead ? '#888' : '#f4ecd8',
+                fontSize: '0.85rem',
+                fontWeight: 700,
+                letterSpacing: '0.04em',
+                boxShadow: '0 4px 8px rgba(0,0,0,0.45)',
+                textDecoration: dead ? 'line-through' : 'none',
+              }}
+            >
+              <span
+                style={{
+                  width: 18,
+                  height: 18,
+                  borderRadius: '50%',
+                  background: toCss(accent),
+                  display: 'inline-block',
+                  flexShrink: 0,
+                }}
+              />
+              <span>{p.nickname}</span>
+              {p.id === meId ? (
+                <span style={{ fontSize: '0.7rem', color: '#cfb978' }}>(你)</span>
+              ) : null}
+              {p.hasSubmitted && snapshot.phase === 'PLAYING' && !dead ? (
+                <span style={{ fontSize: '0.7rem', color: '#7ad17a' }}>✓</span>
+              ) : null}
+              {pantsDown ? (
+                <span
+                  style={{
+                    color: toCss(palette.briefs),
+                    fontSize: '0.7rem',
+                    fontWeight: 800,
+                  }}
+                >
+                  ! 裤衩
+                </span>
+              ) : null}
+              {dead ? (
+                <span style={{ fontSize: '0.7rem', color: '#ff5454', fontWeight: 800 }}>×死</span>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+
+      <BattleLog entries={logEntries} />
+
+      {/* Bottom action bar */}
+      <footer
+        style={{
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          right: 'min(30vw, 360px)',
+          padding: '14px 16px 18px',
+          background:
+            'linear-gradient(0deg, rgba(11,13,18,0.92) 0%, rgba(11,13,18,0.0) 100%)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 8,
+          zIndex: 5,
+        }}
+      >
+        <div
+          style={{
+            color: toCss(palette.uiGold),
+            fontWeight: 700,
+            fontSize: '1rem',
+            letterSpacing: '0.08em',
+            textShadow: '0 2px 0 #6a4012',
+          }}
+        >
+          {isOver
+            ? winnerId === meId
+              ? '★ 你赢了！'
+              : winnerId
+              ? '× 你输了…'
+              : '游戏结束'
+            : isSelfDead
+            ? '你已被淘汰，旁观剩余战斗'
+            : phaseInfo.hint}
+        </div>
+        {isOver ? (
+          <div style={{ display: 'flex', gap: 10 }}>
+            {isHost ? (
+              <button
+                type="button"
+                onClick={rematch}
+                style={primaryFooterButtonStyle()}
+              >
+                再来一局
+              </button>
+            ) : (
+              <span style={{ color: '#8a7a52', fontSize: '0.9rem' }}>
+                等待房主开启下一局…
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={leaveRoom}
+              style={secondaryFooterButtonStyle()}
+            >
+              离开
+            </button>
+          </div>
+        ) : (
+          <HandPicker
+            enabled={uiPhase === 'IDLE' && !isSelfDead}
+            value={pick}
+            onPick={onPick}
+          />
+        )}
+      </footer>
+    </div>
+  );
+}
+
+// ---- helpers ----
+
+function appendLog(
+  entry: Omit<LogEntry, 'id' | 'ts'>,
+  setLogEntries: React.Dispatch<React.SetStateAction<LogEntry[]>>,
+): void {
+  setLogEntries((prev) => [
+    ...prev.slice(-40),
+    { ...entry, id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ts: Date.now() },
+  ]);
+}
+
+function primaryFooterButtonStyle(): React.CSSProperties {
+  return {
+    padding: '0.7rem 1.6rem',
+    borderRadius: 12,
+    background: toCss(palette.uiGold),
+    border: '3px solid #6a4012',
+    color: '#1a1208',
+    fontWeight: 800,
+    fontSize: '1.05rem',
+    letterSpacing: '0.12em',
+    cursor: 'pointer',
+    boxShadow: '0 4px 0 rgba(0,0,0,0.6)',
+  };
+}
+
+function secondaryFooterButtonStyle(): React.CSSProperties {
+  return {
+    padding: '0.7rem 1.2rem',
+    borderRadius: 12,
+    background: 'rgba(247,215,116,0.18)',
+    border: '2px solid rgba(247,215,116,0.55)',
+    color: '#f4ecd8',
+    fontWeight: 700,
+    fontSize: '1rem',
+    letterSpacing: '0.12em',
+    cursor: 'pointer',
+  };
+}
+
+function Knife(): JSX.Element {
+  return (
+    <svg width="34" height="34" viewBox="0 0 32 32" aria-hidden>
+      <polygon points="13,2 19,2 21,22 16,28 11,22" fill="#d0d8e0" stroke="#5a6068" strokeWidth="0.5" />
+      <polygon points="14,2 15,2 16,26" fill="#ffffff" opacity="0.6" />
+      <rect x="11" y="22" width="10" height="3" fill="#6a4a28" />
+      <rect x="10" y="25" width="12" height="5" fill="#4a2810" />
+      <rect x="10" y="29" width="12" height="2" fill="#1a0e08" />
+    </svg>
+  );
+}
+
+// Suppress unused-import warnings — `Effect` is referenced via the
+// pendingRound consumer's narrowing path above.
+type _UnusedEffect = Effect;

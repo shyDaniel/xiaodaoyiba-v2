@@ -250,3 +250,59 @@ PixiJS v8 + React 18 StrictMode notes:
   and `initialized` flags so a tear-down before `app.init` resolves
   doesn't double-destroy.
 
+
+## Client networking (iteration 29, S-324)
+
+**Wire shape (mirrors the server's vocabulary):**
+
+```
+client → server: room:create {nickname}
+                 room:join   {code, nickname}
+                 room:leave
+                 room:addBot
+                 room:start
+                 room:choice {choice}
+                 room:rematch
+
+server → client: room:created  {code, snapshot}
+                 room:joined   {code, snapshot}
+                 room:snapshot RoomSnapshot
+                 room:effects  {round, effects[], narration, isGameOver, winnerId}
+                 room:error    {code, message}
+```
+
+`packages/client/src/socket.ts` is the only file that touches
+`socket.io-client`. Every inbound event fans into the Zustand
+`gameStore` so React components subscribe to *state*, never to
+sockets directly. The store holds `{connected, error, code,
+snapshot, pendingRounds[]}` — no animation/sprite state, that lives
+in Pixi per FINAL_GOAL §A.
+
+**Round-drain pattern (MultiGame.tsx):** each `room:effects` payload
+is appended to `pendingRounds`. A `useEffect` (guarded by a
+`drainingRef` to prevent re-entry under StrictMode's double-mount)
+loops while the queue is non-empty: pop the head, await
+`EffectPlayer.play(effects, players, {onNarration})`, push the
+narration rows to the BattleLog, call `stage.reset(playerIds)`,
+then `shiftRound()`. This keeps animation timing canonical
+(`packages/shared/src/game/timing.ts`) and identical between solo
+and multi paths — the only difference is who supplies the effects.
+
+**Routing:** App.tsx is a 4-state conditional render keyed off
+`{solo, code, snapshot.phase}`:
+- `solo === true` → `<GamePage>` (legacy single-player canvas)
+- `!code` → `<LandingPage>` (nickname + create/join)
+- `snapshot.phase === 'LOBBY'` → `<LobbyPage>` (player list + 开战)
+- otherwise → `<MultiGamePage>` (PLAYING or ENDED)
+
+No react-router; the cold-load surface is zero-config and the
+Lobby→MultiGame transition fires automatically when the host clicks
+开战 (server flips `phase=PLAYING`, snapshot lands in the store,
+App re-renders).
+
+**Smoke proof:** `node scripts/smoke-multiplayer.mjs` boots the real
+server (via tsx) and runs two `socket.io-client` sockets through the
+full create→join→start→submit handshake. Asserts (a) the 4-char
+code propagates, (b) host and guest receive byte-identical
+`Effect[]` timelines on resolve, (c) the lone surviving player is
+promoted to host on disconnect.

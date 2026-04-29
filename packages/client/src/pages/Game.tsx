@@ -69,7 +69,7 @@ const PHASE_INFOS: Record<string, PhaseInfo> = {
   OVER: { label: '终局', hint: '游戏结束' },
 };
 
-export function GamePage(): JSX.Element {
+export function GamePage({ onExit }: { onExit?: () => void } = {}): JSX.Element {
   const [round, setRound] = useState(1);
   const [phase, setPhase] = useState<keyof typeof PHASE_INFOS>('IDLE');
   const [pick, setPick] = useState<RpsChoice | null>(null);
@@ -393,6 +393,25 @@ export function GamePage(): JSX.Element {
           }}
         >
           <PhasePill round={round} phase={phase} info={phaseInfo} />
+          {onExit ? (
+            <button
+              type="button"
+              onClick={onExit}
+              style={{
+                background: 'rgba(11,13,18,0.7)',
+                border: '2px solid rgba(247,215,116,0.45)',
+                borderRadius: 999,
+                padding: '6px 12px',
+                color: '#cfb978',
+                fontWeight: 700,
+                fontSize: '0.8rem',
+                cursor: 'pointer',
+                letterSpacing: '0.1em',
+              }}
+            >
+              ← 大厅
+            </button>
+          ) : null}
           <MuteButton
             muted={muted}
             onToggle={() => {

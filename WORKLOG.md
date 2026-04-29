@@ -1196,3 +1196,76 @@ launch the wrapper and get a working browser MCP.
   the wrapper, drop inline `env.LD_LIBRARY_PATH` for playwright,
   drop the chrome-devtools `env` block entirely (wrapper handles it)
 - `WORKLOG.md` (this entry)
+
+
+---
+
+## Iteration 29 — wire socket.io-client into the React client (S-324)
+
+**What:** Closed the long-standing iter-7 gap where the v2 server's
+`Room` / matchmaking code was dead from the client's perspective. The
+client now actually connects.
+
+- `packages/client/src/socket.ts` (NEW) — singleton `socket.io-client`
+  wrapper. Exposes `connect()`, `createRoom(nick)`, `joinRoom(code, nick)`,
+  `leaveRoom()`, `addBot()`, `startGame()`, `submitChoice(c)`,
+  `rematch()`, `disconnect()`. Inbound `room:created`, `room:joined`,
+  `room:snapshot`, `room:effects`, `room:error`, plus connect/
+  disconnect lifecycle, all fan into the Zustand store.
+- `packages/client/src/store/gameStore.ts` (NEW) — Zustand store holding
+  `{connected, error, code, snapshot, pendingRounds}`. Animation
+  state stays out of the store per FINAL_GOAL §A.
+- `packages/client/src/pages/Landing.tsx` (NEW) — entry funnel.
+  Nickname input (persisted in localStorage), "+ 新建房间", 4-char
+  room-code field + "→ 加入", and a "单机练习" escape hatch that drops
+  back to the legacy single-player surface. Connection status shown
+  inline.
+- `packages/client/src/pages/Lobby.tsx` (NEW) — pre-game lobby.
+  Large copyable room code, live player list with host star + (你)
+  marker, "+ 加机器人" and host-only "开战" buttons.
+- `packages/client/src/pages/MultiGame.tsx` (NEW) — networked headline
+  surface. Mounts the same `<GameStage>` as solo mode but drains
+  `pendingRounds` from the store: each new `RoundBroadcast` is awaited
+  through `EffectPlayer.play()` then `shiftRound()`. Picker emits
+  `socket.submitChoice()` instead of running `resolveRound()` in
+  component scope. Host-only "再来一局" calls `socket.rematch()`.
+- `packages/client/src/App.tsx` — replaced the bare `<GamePage />`
+  mount with a state-driven router: `solo` flag → GamePage,
+  `code+snapshot` → LobbyPage / MultiGamePage by phase, otherwise
+  LandingPage.
+- `packages/client/src/pages/Game.tsx` — added `onExit?` prop so solo
+  mode can return to the landing funnel. The 7 `makeBots()` /
+  `resolveRound()` call sites are unchanged because Game.tsx is now
+  intentionally the *single-player* surface (Multiplayer flows
+  through MultiGame.tsx).
+- `scripts/smoke-multiplayer.mjs` (NEW) — spins up the real server
+  via tsx and drives two real `socket.io-client` sockets through the
+  full create/join/start/choice/disconnect handshake; asserts
+  identical Effect[] emitted to host + guest and that the lone
+  remaining player is promoted to host.
+
+**What I observed:**
+- `pnpm test` → 3 packages, 118 tests passed (62 shared + 21 server +
+  35 client), no regressions.
+- `pnpm build` → green; client bundle 523KB raw / 167KB gzipped.
+- `node scripts/smoke-multiplayer.mjs` →
+  ```
+  [smoke] room created: Z5S3 players=1
+  [smoke] guest joined room Z5S3 players=2
+  [smoke] host sees 2 players after join
+  [smoke] game started; phase=PLAYING round=0
+  [smoke] host got 11 effects (round=1)
+  [smoke] guest got 11 effects (round=1)
+  [smoke] ✅ both clients received identical Effect[] timeline
+  [smoke] after guest disconnect: host sees 1 player; isHost=true
+  [smoke] ✅ all multiplayer assertions passed
+  ```
+  Two clients now share a room, exchange identical 11-effect timelines
+  on a resolve, and host promotion fires on disconnect — the iter-7
+  acceptance test for S-324 passes.
+
+**MCP gap unchanged:** browser MCPs still error in spawned sessions
+(launcher-side, out-of-tree per iter-25 verdict). Visual validation of
+the new Landing/Lobby pages would need the wrapper to be honored at
+launch time; the multiplayer correctness is proven by the smoke test
+above instead.
