@@ -596,3 +596,50 @@ acceptance smoke `pnpm sim --players 4 --bots counter,random,iron,mirror
 exits 0 (today still the bootstrap stub — flag plumbing comes with the
 sim engine subtask, but the workflow already invokes the canonical
 acceptance command so it auto-tightens once sim is wired).
+
+---
+
+## Iteration 17 — S-235 sim CLI engine wiring + bot registry
+
+**What:** Replaced the 5-line stub `packages/server/src/sim.ts` with a full
+headless game runner, and built out the missing
+`packages/shared/src/game/bots/` directory.
+
+**Files added:**
+- `packages/shared/src/game/bots/seedRng.ts` — `mulberry32`/`splitmix32`
+  PRNGs + `deriveBotSeed(runSeed, roomId, botId)` so two bots with the
+  same strategy but different ids produce independent throw streams
+  (FINAL_GOAL §A4).
+- `packages/shared/src/game/bots/types.ts` — `BotStrategy`/`BotContext`/
+  `RoundHistoryEntry` contract.
+- `packages/shared/src/game/bots/{counter,random,iron,mirror}.ts` — four
+  diversified strategies (FINAL_GOAL §A3).
+- `packages/shared/src/game/bots/index.ts` — registry, `pickStrategyForIndex`
+  round-robin diversifier, `resetBotCaches()` for sim reproducibility.
+- Re-exported the bots barrel from `packages/shared/src/game/index.ts`.
+
+**Files changed:**
+- `packages/server/src/sim.ts` — full rewrite: hand-rolled argv parser
+  (`--players`/`--bots`/`--rounds`/`--seed`/`--format`/`--quiet`/`--help`),
+  per-slot seeded RNG via `seededRng`, back-to-back game loop calling
+  `resolveRound()`, per-round emission in either grep-able human format or
+  JSONL, summary line with games/rounds/ties/tie_rate/per-player wins +
+  throws/seed, and stderr warnings when §A2 budgets (ties<30%, no bot
+  >60%) are exceeded.
+
+**Observed (real runs from this iteration):**
+- `pnpm sim --players 4 --bots counter,random,iron,mirror --rounds 50
+  --seed 42` exits 0, prints 50 `round=N` lines + summary; **5 ms** wall
+  clock, **7 games** completed, ties=13/50 (**0.260**), top bot
+  counter=4/7 wins (57% — under §A2's 60% ceiling). Two back-to-back
+  invocations with the same seed produced byte-identical summary lines
+  (verified with `diff`).
+- Sweep at `--rounds 100` × seeds {1, 7, 100, 999}: tie rates
+  0.250/0.230/0.220/0.170 (all <0.30); peak bot win share 50%/40%/38%
+  (all ≤60%); 14-16 games/run; **3-5 ms** wall clock.
+- `pnpm test` still 74/74 green; `pnpm typecheck` clean.
+
+**Closes verdict bullets:** "SIM CLI IS A STUB" and "BOTS DIRECTORY MISSING"
+from the iter-17 outstanding-work brief (FINAL_GOAL §A1/A2/A3/A4/B2). The
+CI smoke step in `.github/workflows/ci.yml` is no longer a no-op — it now
+exercises the real engine end-to-end.
