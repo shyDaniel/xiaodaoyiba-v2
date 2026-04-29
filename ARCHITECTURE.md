@@ -172,3 +172,81 @@ pnpm build          ──▶  per-package build (server tsup → dist, client v
   (well under the 60s gate, FINAL_GOAL §E1).
 - `pnpm -r exec tsc --noEmit`: exits 0 across `@xdyb/shared`, `@xdyb/server`,
   `@xdyb/client` (the iteration-1 acceptance test).
+
+## Client canvas architecture (iteration 6, S-084)
+
+The client is split cleanly between *React chrome* (header, sidebar,
+buttons, chips — anything text/2D-DOM) and *PixiJS canvas* (anything
+that animates per-frame: clouds, leaves, characters, knife arc).
+React owns mount/unmount and a single snapshot of the current room
+state; it never re-renders for a per-frame change. PixiJS owns the
+animation loop and reads from imperative state set by React.
+
+```
+packages/client/src/
+  main.tsx                 React root (StrictMode)
+  App.tsx                  → <GamePage/>
+  palette.ts               hex palette + playerColor() id-hash
+  pages/Game.tsx           Game surface — chrome + GameStage host +
+                           local engine loop (resolveRound + 3 bots)
+  components/
+    HandPicker.tsx         Rock/Paper/Scissors (inline SVG icons)
+    BattleLog.tsx          right-rail log w/ verb badges + glow + colorized actors
+  canvas/
+    GameStage.tsx          single Pixi Application; 4 layers
+                           (bg / mountains / gameplay / fg);
+                           ResizeObserver → renderer.resize +
+                           per-layer .resize; per-player diff
+                           reconcile (add/remove/update)
+    stage/Background.ts    sky bands + sun + drifting clouds
+    stage/Mountains.ts     two ridges with snow caps
+    stage/Ground.ts        perspective road; exports groundY
+    stage/Foreground.ts    lantern + drifting leaves
+    stage/House.ts         owner-tinted house + name plaque
+    characters/Character.ts chibi rig + IDLE/PREP/RUSH/STRIKE/PULL/
+                           SHAME/DEAD/CHEER state machine; persistent
+                           setPantsDown() across rounds (FINAL_GOAL §C7)
+```
+
+Render-loop contract: GameStage adds a single `app.ticker.add(tick)`
+that calls `bg.update(dt)`, `fg.update(dt)`, and `character.update(dt)`
+for every character. No React state changes per frame. Players are
+mirrored from React via the `players: StagePlayer[]` prop, reconciled
+in a separate `useEffect([players])` that adds new houses/characters,
+updates `setPantsDown` / `setState('DEAD')` for existing ones, and
+removes dropped players. `layoutPlayers()` runs `computeSpots(n)` to
+implement FINAL_GOAL §C9: 2 → side-by-side, 3 → triangle (apex back),
+4 → square (2 back, 2 front), 5–6 → fan / semicircle.
+
+The Game page drives a *local* round loop using shared `resolveRound()`:
+collect player choice + 700 ms thinking + bots pick → resolve → for
+each `Effect` use `setTimeout(eff.atMs)` to schedule narration / state
+flips, with `TIE_NARRATION_HOLD_MS` (2000 ms) for ties and
+`ACTION_TOTAL_MS` (4000 ms) for action rounds. This is the Socket.IO
+swap point: when the server gains a Room class, the page replaces
+its local `resolveRound` call with a `socket.on('round:effects', ...)`
+handler that consumes the same Effect[] shape.
+
+Visual fidelity choices:
+- *No external sprite atlases.* Every character / house / cloud /
+  mountain / lantern is drawn from PixiJS Graphics primitives in
+  TypeScript. Side benefit: zero asset-pipeline cost, deterministic
+  colors via `playerColor(id)`.
+- *No emoji in the chrome layer.* All glyphs (rock/paper/scissors,
+  speaker, pants-down indicator) are inline SVG so they render
+  identically across browsers and headless test runners.
+- *BattleLog is a true sidebar*, not a floating overlay. The
+  `<GameStage>` host, header, and footer are sized
+  `right: min(30vw, 360px)` so the canvas never paints under the
+  log. (An earlier overlay using `backdrop-filter: blur(6px)`
+  bled outside its bounds in headless chrome.)
+
+PixiJS v8 + React 18 StrictMode notes:
+- `app.init({ resizeTo: host })` is *not* used; StrictMode's
+  double-mount confused the resize plugin's binding and threw
+  `this._cancelResize is not a function` during cleanup. Instead,
+  GameStage passes explicit `width/height` and runs renderer.resize()
+  manually from the ResizeObserver. The cleanup tracks `cancelled`
+  and `initialized` flags so a tear-down before `app.init` resolves
+  doesn't double-destroy.
+

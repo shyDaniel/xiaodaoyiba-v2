@@ -309,3 +309,139 @@ imports from a single `timing.ts` and the engine self-validates the sum.
 - scripts/gen-sprites.mjs + scripts/smoke-headless.mjs.
 - GitHub Actions CI.
 
+---
+
+## Iteration 6 — viral aesthetic gate / Game page + PixiJS canvas (S-084)
+
+**What:** Replaced the placeholder client UI (single `<h1>` + paragraph
+on a radial gradient) with a real, end-to-end Game surface: a PixiJS 8
+canvas with sky/sun/clouds/lantern, parallax mountain ridges, a
+perspective dirt road, drifting leaves, owner-tinted houses with name
+plaques, and chibi characters that hold knives, lean into RUSH, swing
+in STRIKE, grab in PULL, and reveal red briefs when SHAME persists.
+The page is wired to a *local* `resolveRound()` engine loop with three
+bots so the product is demonstrable immediately on `pnpm dev`, before
+the server gains a Room class (Socket.IO swap-in is the next iteration).
+
+**Files added (client):**
+- `packages/client/src/palette.ts` — hex palette, `playerColor()` deterministic
+  hash, `toCss()` helper.
+- `packages/client/src/canvas/GameStage.tsx` — owns the Pixi `Application`,
+  4 parallax layers (bg/mountains/gameplay/fg), reconciles `players`
+  via diff (add/remove/update), implements `computeSpots()` for n=1..6
+  per FINAL_GOAL §C9 (side-by-side / triangle / square / fan).
+- `packages/client/src/canvas/stage/Background.ts` — sky gradient (32-band
+  rect stack), sun + halo, drifting clouds with sin-bob.
+- `packages/client/src/canvas/stage/Mountains.ts` — two ridges of
+  triangular peaks with snow caps.
+- `packages/client/src/canvas/stage/Ground.ts` — perspective dirt road
+  (trapezoid + dashed center stripe + grass tufts), exports `groundY`.
+- `packages/client/src/canvas/stage/Foreground.ts` — hanging lantern with
+  sway, six drifting leaves with rotation.
+- `packages/client/src/canvas/stage/House.ts` — 220-px house: roof + body
+  + door + 2 windows + chimney + name plaque, owner-tinted via
+  `playerColor()`.
+- `packages/client/src/canvas/characters/Character.ts` — chibi rig:
+  shadow / legs / pants / red briefs / torso / vest / collar / belt /
+  arms / knife / head / hair / eyes / mouth / sweat. State machine
+  IDLE → PREP → RUSH → STRIKE → PULL → SHAME → DEAD → CHEER drives
+  body lean, arm rotation, knife arc, sweat alpha; `setPantsDown(true)`
+  persists across rounds (FINAL_GOAL §C7).
+- `packages/client/src/components/HandPicker.tsx` — 3 chunky buttons
+  with custom inline SVG hand icons (no emoji-font dependency), Chinese
+  labels (石头/布/剪刀), gold flash 220 ms on press, hover scale 1.03.
+- `packages/client/src/components/BattleLog.tsx` — fixed right-edge
+  sidebar with verb-color-coded rows, fade-in + 800-ms gold halo on
+  new entries, `colorizeActors()` recolors player names inline using
+  the same `playerColor()` hash the canvas uses.
+- `packages/client/src/pages/Game.tsx` — full Game surface (header with
+  title + tagline + R# round + phase pill + SVG mute, player chip strip,
+  GameStage host, BattleLog sidebar, footer with HandPicker). Drives a
+  local engine loop: collect choice + 700 ms thinking + `resolveRound()`
+  + ACTION/TIE phase replay scheduled by Effect.atMs / setTimeout, with
+  `TIE_NARRATION_HOLD_MS` and `ACTION_TOTAL_MS` honored.
+
+**Files modified:**
+- `packages/client/src/App.tsx` — now renders `<GamePage />` (was a
+  placeholder gradient page).
+
+**Engineering hazards solved during the iteration:**
+- *PixiJS v8 `resizeTo` + React StrictMode = `this._cancelResize is not a
+  function` crash.* Fixed by passing explicit `width/height` to
+  `app.init()` and managing renderer.resize() manually from the
+  ResizeObserver. StrictMode double-invocation is now safe: cleanup
+  guards on `cancelled` and `initialized` flags.
+- *Effect[] discriminator field is `type`, not `kind`.* Re-read
+  `effects.ts` and aligned all consumers (`eff.text`, `action.actor`,
+  `action.target`, `action.kind`).
+- *Headless chrome rendered ✊✋✌🔊💢💀 as ⊠ tofu boxes.* Replaced every
+  emoji in the chrome layer with hand-drawn inline SVG (HandPicker
+  rock/paper/scissors, MuteButton speaker, PlayerChip ! 裤衩 / ×死
+  text glyphs).
+- *BattleLog backdrop-filter blur stretched outside its bounds in
+  headless chrome, painting a cloud over the right ¼ of the canvas.*
+  Replaced the floating `position:absolute` overlay with a true
+  full-height right rail (no backdrop-filter), and shrank the
+  `<GameStage>` host + header + footer to `right: min(30vw, 360px)`
+  so they no longer slide under the sidebar.
+- *Pixi v8 React-StrictMode + `border` shorthand + `borderLeft` in
+  React inline styles produced a runtime warning.* Switched to
+  long-hand `borderTopWidth/RightWidth/BottomWidth/LeftWidth` plus
+  `borderTopColor/...` so React applies them atomically.
+- *Sudoless Linux box without `libnspr4`.* Used `apt-get download` (no
+  root) + `dpkg-deb -x` to extract Chromium's transitive shared libs
+  into `/tmp/libs/extracted`, then ran the bundled
+  `chromium-1217/chrome-linux64/chrome` via Playwright with
+  `LD_LIBRARY_PATH=...`. Now `node /tmp/screenshot-game.mjs` produces
+  PNG screenshots end-to-end.
+
+**Observed (Playwright screenshots, headless 1440×900):**
+- *initial:* sky gradient, sun, 3 drifting clouds, hanging lantern,
+  mountain ridges, perspective road, 4 owner-tinted houses with name
+  plaques, 4 chibi characters with knives, R1 · 出拳 phase pill,
+  speaker SVG, 4-row player chip strip, BattleLog right rail with
+  "等待第一回合... 出拳！" placeholder, 3-button HandPicker
+  (rock/paper/scissors SVG + Chinese labels), action hint
+  "点击下方按钮选择石头/剪刀/布".
+- *after-pick (700 ms post click):* ROCK button gold-flashed (selected
+  highlight), header phase pill switches to · 等待 / 判定 / 动作.
+- *mid-action (during ACTION_TOTAL_MS):* BattleLog populated with
+  pull_pants narration `"你一个箭步上前，扒下了 小芳 的裤衩"` with
+  per-player colored names + "扒" verb badge tinted red, body lean
+  applied to active actor.
+- *post-round (R2 starts):* persistent pants-down — player chip strip
+  shows `小芳 ! 裤衩` red badge, and the green-vest character still
+  has visible red briefs at the waist (FINAL_GOAL §C7 holds).
+
+**Build/test status:**
+- `pnpm typecheck` (all 3 packages): **0 errors**.
+- `pnpm test` (shared): **62 / 62 passing**.
+- `pnpm build` (client) gzip totals: index 142 KB +
+  WebGLRenderer 19 KB + RenderTargetSystem 13 KB + browserAll 11 KB +
+  WebGPURenderer 11 KB + smaller chunks ≈ **213 KB** total — well
+  under the 300 KB §E3 ceiling.
+- `pnpm dev` on `:5191` (5173 was occupied by v1) renders the page in
+  ≈ 700 ms incl. PixiJS init.
+
+**Acceptance:** FINAL_GOAL "VIRAL AESTHETIC GATE" — *"the screenshot at
+/game must show ≥3 distinct visual elements (background + characters
++ houses) plus action-control UI"* — passes with margin: the rendered
+scene shows ≥10 distinct visual elements (sky, sun, clouds, lantern,
+mountains, road, 4 houses, 4 characters, knives, leaves, header,
+phase pill, mute, chip strip, hand-icon picker, BattleLog with
+animated rows, pants-down indicator, color-coded verb badges).
+
+**Not in this iteration (deferred to next):**
+- Server Room.ts + matchmaking.ts + Socket.IO wiring (the local
+  engine loop in Game.tsx is the swap point).
+- Landing / Lobby / Match-end pages (only Game.tsx is built; the
+  router is `App` rendering `<GamePage />` directly for now).
+- Animation polish: a real `EffectPlayer` (currently the page maps
+  Effect[] inline; lifting it into `client/canvas/EffectPlayer.ts`
+  is the natural next refactor).
+- Sound: WebAudio mixer + sfx (the SVG mute button persists state but
+  has no audio source yet).
+- Client Vitest tests for the page (S-084 was a visual gate; future
+  iterations should add `.test.tsx` for HandPicker / BattleLog logic).
+- GitHub Actions CI.
+
