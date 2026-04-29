@@ -1,5 +1,5 @@
 {
-  "$comment": "Repo-local MCP overrides. Both Chromium-based MCPs are pinned to the local Playwright-managed Chromium because the system has no /opt/google/chrome install. LD_LIBRARY_PATH provides the X11/atk/cups shared libs that ms-playwright/chromium-1217 needs but the host's default lib path lacks. See WORKLOG.md S-246 for the full repro.",
+  "$comment": "Repo-local MCP overrides. Both Chromium-based MCPs are pinned to scripts/mcp-chrome-wrapper.sh which auto-resolves the cached Playwright chromium and layers LD_LIBRARY_PATH from /tmp/libs/extracted (preferred) and ~/.local/chrome-libs (fallback) so Chrome can find libnspr4 / libnss3 / X11 / atk / asound. The system has no /opt/google/chrome and pinning a single absolute path is brittle across iterations because /tmp gets wiped. See WORKLOG.md S-312 (and S-246 for the original repro).",
   "mcpServers": {
     "playwright": {
       "command": "npx",
@@ -9,13 +9,12 @@
         "--headless",
         "--isolated",
         "--executable-path",
-        "/home/hanyu/.cache/ms-playwright/chromium-1217/chrome-linux64/chrome",
+        "/home/hanyu/projects/xiaodaoyiba-v2/scripts/mcp-chrome-wrapper.sh",
         "--no-sandbox",
         "--viewport-size",
         "1280,800"
       ],
       "env": {
-        "LD_LIBRARY_PATH": "/tmp/libs/extracted/usr/lib/x86_64-linux-gnu",
         "PLAYWRIGHT_BROWSERS_PATH": "/home/hanyu/.cache/ms-playwright"
       }
     },
@@ -27,17 +26,14 @@
         "--headless",
         "--isolated",
         "--executablePath",
-        "/home/hanyu/.cache/ms-playwright/chromium-1217/chrome-linux64/chrome",
+        "/home/hanyu/projects/xiaodaoyiba-v2/scripts/mcp-chrome-wrapper.sh",
         "--chromeArg=--no-sandbox",
         "--chromeArg=--disable-setuid-sandbox",
         "--chromeArg=--disable-dev-shm-usage",
         "--viewport",
         "1280x800",
         "--no-usage-statistics"
-      ],
-      "env": {
-        "LD_LIBRARY_PATH": "/tmp/libs/extracted/usr/lib/x86_64-linux-gnu"
-      }
+      ]
     }
   }
 }

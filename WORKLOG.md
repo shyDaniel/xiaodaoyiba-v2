@@ -1118,3 +1118,81 @@ typecheck → 0 errors. pnpm build → client gzip 217 KB (under 300 KB
   Camera, register four layers with parallax+anchor, drive update()
   in ticker, recenterAnchors() on resize)
 - `WORKLOG.md` (this entry)
+
+---
+
+## Iteration 28 — MCP browser wrapper (S-312)
+
+**What:** Hardened the playwright + chrome-devtools MCP launch path so
+both can spawn Chromium in this WSL sandbox without per-iteration
+manual fix-up. The old `.mcp.json` pinned chrome to an absolute path
+under the cached Playwright install AND exported a single
+`LD_LIBRARY_PATH` pointing at `/tmp/libs/extracted` — but `/tmp` gets
+wiped between iterations, and even when populated the host is missing
+`libnspr4.so` / `libnss3.so` / X11 / atk / asound at the system loader
+path. Result: every fresh worker session that picked up an MCP-using
+subagent had `npx chrome-devtools-mcp` / `@playwright/mcp` fall over
+with `Chromium distribution 'chrome' is not found at
+/opt/google/chrome/chrome` or `error while loading shared libraries:
+libnspr4.so` and the autopilot lost its only headless-browser tool
+mid-iteration.
+
+**Fix:** introduced `scripts/mcp-chrome-wrapper.sh` modeled after the
+v1 repo's wrapper. The script (a) auto-resolves the highest-numbered
+chromium under `~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome`
+sorted by `sort -V` so chromium-1217 wins over chromium-999, (b)
+composes `LD_LIBRARY_PATH` from whichever of
+`/tmp/libs/extracted/usr/lib/x86_64-linux-gnu` (preferred — 86 libs)
+and `~/.local/chrome-libs/usr/lib/x86_64-linux-gnu` (fallback — 42
+libs) actually exist, and (c) `exec`s chrome so SIGTERM from the MCP
+supervisor reaches the chrome process directly. Both `MCP_CHROME_BIN`
+and `MCP_CHROME_LIBS` are honored as overrides for future
+environments. Updated `.mcp.json` so both `--executable-path`
+(playwright-mcp) and `--executablePath` (chrome-devtools-mcp) point
+at the wrapper instead of an absolute chrome binary, and dropped the
+brittle inline `env.LD_LIBRARY_PATH` because the wrapper now owns
+that. Kept `PLAYWRIGHT_BROWSERS_PATH=~/.cache/ms-playwright` for
+playwright-mcp because it scans that dir even when given an explicit
+executable.
+
+**Acceptance:** spawned each MCP via the new config from a Node
+JSON-RPC harness (so the test bypasses the already-running Claude
+session that can't pick up new args mid-flight). Results:
+
+- `@playwright/mcp` → `initialize` OK (server name "Playwright"),
+  `browser_navigate http://localhost:5173/` OK (page title
+  "小刀一把 Online · 猜拳对战"), `browser_take_screenshot` returned a
+  **28 161-byte 1280×800 8-bit RGB PNG** of the lobby UI.
+- `chrome-devtools-mcp` → `initialize` OK (server "chrome_devtools"),
+  `navigate_page` to localhost:5173 OK, page registered as the
+  selected page in the devtools page list.
+
+The page snapshot from playwright-mcp showed the canonical lobby
+elements — `小刀一把` heading, nickname textbox, room-id textbox,
+两个 disabled CTA buttons (`创建房间`, `快速匹配（找陌生人对战）`),
+the `v0.0.1 · 就爱玩这口` footer — confirming Vite-served React +
+shared assets render under the headless chrome, not just a blank
+page.
+
+**Known limitation (documented, not a regression):** the Claude Code
+session that spawned this iteration was launched via
+`claude-vscode` and reads its MCP servers at startup. Once the
+in-process MCP supervisor has started a child without the .mcp.json
+overrides, the live `mcp__playwright__*` and
+`mcp__chrome-devtools__*` tool surface in *this* session won't pick
+up the new wrapper — verified by killing the running playwright-mcp
+PID and watching the supervisor respawn it with bare
+`npm exec @playwright/mcp@latest` and no args. The fix lands the
+infrastructure for *future* iterations: any worker started after this
+commit that reads `.mcp.json` (whether via the SDK's
+`--mcp-config` + `--strict-mcp-config`, the autopilot's
+`resolveMcpServers()` merge, or the in-repo trust handling) will
+launch the wrapper and get a working browser MCP.
+
+**Files touched:**
+- `scripts/mcp-chrome-wrapper.sh` (NEW, executable) — auto-resolve
+  chrome + layered LD_LIBRARY_PATH
+- `.mcp.json` (modify) — point both MCP `--executable-path` flags at
+  the wrapper, drop inline `env.LD_LIBRARY_PATH` for playwright,
+  drop the chrome-devtools `env` block entirely (wrapper handles it)
+- `WORKLOG.md` (this entry)
