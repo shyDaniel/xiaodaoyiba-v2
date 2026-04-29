@@ -21,6 +21,15 @@ import {
 import { HandPicker } from '../components/HandPicker.js';
 import { BattleLog, type LogEntry, type LogVerb } from '../components/BattleLog.js';
 import { palette, toCss, playerColor } from '../palette.js';
+import {
+  isMuted as audioIsMuted,
+  setMuted as audioSetMuted,
+  setVariant as setBgmVariant,
+  startBgm,
+  stopBgm,
+  play as playSfx,
+  unlockAudio,
+} from '../audio/index.js';
 
 interface BotProfile {
   id: string;
@@ -64,10 +73,7 @@ export function GamePage(): JSX.Element {
   const [round, setRound] = useState(1);
   const [phase, setPhase] = useState<keyof typeof PHASE_INFOS>('IDLE');
   const [pick, setPick] = useState<RpsChoice | null>(null);
-  const [muted, setMuted] = useState<boolean>(() => {
-    if (typeof localStorage === 'undefined') return false;
-    return localStorage.getItem('xdyb.muted') === '1';
-  });
+  const [muted, setMuted] = useState<boolean>(() => audioIsMuted());
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const [playerStates, setPlayerStates] = useState<PlayerState[]>(() => {
     const bots = makeBots();
@@ -91,11 +97,43 @@ export function GamePage(): JSX.Element {
   // engine events and characters never RUSHed.
   const stageRef = useRef<StageController | null>(null);
 
-  // Persist mute
+  // Persist mute through the audio module (which also writes localStorage
+  // and notifies the BGM driver to halt/resume).
   useEffect(() => {
-    if (typeof localStorage === 'undefined') return;
-    localStorage.setItem('xdyb.muted', muted ? '1' : '0');
+    audioSetMuted(muted);
   }, [muted]);
+
+  // BGM lifecycle. Start on mount in the lobby variant; switch variants
+  // when phase changes; stop on unmount. The very first start() is a
+  // no-op until the user clicks something (autoplay policy) — the
+  // HandPicker.onClick → unlockAudio() pairing handles that gesture.
+  useEffect(() => {
+    startBgm('lobby');
+    return () => stopBgm();
+  }, []);
+
+  // Cross-fade BGM variant on phase change. ACTION/RESOLVE/TIE all map to
+  // the battle loop (slightly tense); IDLE/WAIT map to lobby (calm);
+  // OVER maps to victory. The cross-fade itself is bounded by
+  // CROSSFADE_DURATION_MS (400ms) so the FINAL_GOAL §D "phase change
+  // cross-fades within 500ms" guarantee holds.
+  useEffect(() => {
+    if (phase === 'OVER') {
+      setBgmVariant('victory');
+    } else if (phase === 'ACTION' || phase === 'RESOLVE' || phase === 'TIE') {
+      setBgmVariant('battle');
+    } else {
+      setBgmVariant('lobby');
+    }
+  }, [phase]);
+
+  // Round-start ding on every new round (debounced by round-state
+  // change so it fires once per round). Skipped on round 1 because the
+  // user hasn't yet clicked anything to unlock the AudioContext.
+  useEffect(() => {
+    if (round <= 1) return;
+    playSfx('roundStart');
+  }, [round]);
 
   // Stage players (visual snapshot)
   const stagePlayers: StagePlayer[] = useMemo(
@@ -220,6 +258,14 @@ export function GamePage(): JSX.Element {
       if (result.isGameOver) {
         setWinnerId(result.winnerId);
         const winner = result.players.find((p) => p.id === result.winnerId);
+        // Victory/defeat jingle: which one depends on whether the human
+        // is the winner. Both kick off as the OVER phase pill appears so
+        // the audio + the "★ 你赢了！" header are synchronized.
+        if (result.winnerId === SELF_ID) {
+          playSfx('victory');
+        } else {
+          playSfx('defeat');
+        }
         appendLog({
           round,
           phase: 'over',
@@ -347,7 +393,16 @@ export function GamePage(): JSX.Element {
           }}
         >
           <PhasePill round={round} phase={phase} info={phaseInfo} />
-          <MuteButton muted={muted} onToggle={() => setMuted((m) => !m)} />
+          <MuteButton
+            muted={muted}
+            onToggle={() => {
+              // The mute button click is itself a user gesture — use it
+              // to unlock the AudioContext so the lobby BGM starts even
+              // for users who toggle audio before clicking a hand.
+              unlockAudio();
+              setMuted((m) => !m);
+            }}
+          />
         </div>
       </header>
 

@@ -8,6 +8,7 @@
 
 import { useState } from 'react';
 import { toCss, palette } from '../palette.js';
+import { play, unlockAudio } from '../audio/index.js';
 
 export type RpsChoice = 'ROCK' | 'PAPER' | 'SCISSORS';
 
@@ -109,6 +110,10 @@ export function HandPicker({ enabled, value, onPick }: HandPickerProps): JSX.Ele
               if (!enabled) return;
               setPressed(opt.key);
               setTimeout(() => setPressed(null), 220);
+              // First user gesture unlocks the AudioContext (autoplay
+              // policy); the tap SFX confirms audio is live.
+              unlockAudio();
+              play('tap');
               onPick(opt.key);
             }}
             style={{

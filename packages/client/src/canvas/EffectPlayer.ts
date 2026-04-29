@@ -34,6 +34,7 @@ import {
   TIE_NARRATION_HOLD_MS,
 } from '@xdyb/shared';
 import type { Character } from './characters/Character.js';
+import { play as playSfx } from '../audio/presets.js';
 
 /** Lookup contract the player needs from its host (GameStage). The host
  *  owns the Pixi scene graph; EffectPlayer is stateless w.r.t. positions
@@ -159,6 +160,7 @@ export class EffectPlayer {
     if (tie && tie.type === 'TIE_NARRATION') {
       // No character motion on a tie — just emit the narration row, sit
       // for the canonical hold, then resolve.
+      playSfx('reveal');
       if (options.onNarration) {
         options.onNarration({
           atMs: 0,
@@ -170,6 +172,10 @@ export class EffectPlayer {
       this.active = false;
       return;
     }
+
+    // Action round opener — `reveal` lands the moment RPS resolves so
+    // the player feels the round flip.
+    playSfx('reveal');
 
     // ── Action path ─────────────────────────────────────────────────────
     // Pull out actions + narrations. ACTION effects fire at PULL_PANTS
@@ -247,6 +253,11 @@ export class EffectPlayer {
           actor.setState('PULL');
           victim.setState('SHAME');
           victim.slideTopPantsDown(PHASE_T_PULL_PANTS);
+          // SFX stack: pull whoop + cloth tear (layered) + a victim gasp
+          // 60ms in so the voice reads as reaction not part of the rip.
+          playSfx('pull');
+          playSfx('clothTear');
+          window.setTimeout(() => playSfx('gasp'), 60);
         } else if (action.kind === 'CHOP') {
           // CHOP: actor stays in PULL pose briefly (still grabbing the
           // pants-down victim) before STRIKE; victim already shows SHAME
@@ -263,6 +274,13 @@ export class EffectPlayer {
       // canvas — we use it only via the post-action snapshot).
       scheduleAt(this.timers, t0, atStrike, () => {
         actor.setState('STRIKE');
+        if (action.kind === 'CHOP') {
+          // Sharp metallic chop on contact + low thud follow-up at the
+          // IMPACT phase boundary so the house-damage hit registers
+          // physically as well as metallically.
+          playSfx('chop');
+          window.setTimeout(() => playSfx('thud'), 600);
+        }
       });
 
       // RETURN: walk back to home spot in IDLE. Uses ease-in-out so the

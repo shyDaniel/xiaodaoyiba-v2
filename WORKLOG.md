@@ -496,3 +496,87 @@ narration.
 - Particle systems / camera / screen shake / audio.
 - Socket.IO Room + Landing/Lobby pages.
 - GitHub Actions CI.
+
+
+---
+
+## iter-15 (S-201) — audio module: zzfx + ZzFXM-style BGM cross-fade (FINAL_GOAL §D)
+
+`packages/client/src/audio/` did not exist. The mute SVG button in
+`Game.tsx` toggled a piece of React state and persisted to
+`localStorage['xdyb.muted']` but no audio source existed downstream:
+no AudioContext, no SFX, no BGM. FINAL_GOAL §D1/§D2/§D3 was
+entirely unimplemented.
+
+This iteration ports v1's ZzFX synth verbatim, layers a tracker-style
+3-variant BGM driver with auto cross-fade on top, wires the SFX into
+the existing Effect[] choreography in `EffectPlayer`, and connects
+the mute button to a real audio source.
+
+**Files added:**
+
+- `packages/client/src/audio/zzfx.ts` — Zuper Zmall Zound Zynth port
+  from v1 (FINAL_GOAL §D1 reuse pointer). Lazy AudioContext
+  unlock-on-gesture; `play(name)` is a no-op when muted or AudioContext
+  is unavailable (jsdom). Persists mute under `xdyb.muted` to keep
+  Game.tsx's existing key. Exports `onMuteChange()` so bgm.ts can
+  pause its driver when muted.
+- `packages/client/src/audio/presets.ts` — 11 named presets
+  (`tap`, `reveal`, `pull`, `clothTear`, `gasp`, `chop`, `dodge`,
+  `thud`, `roundStart`, `victory`, `defeat`) — covers the 9
+  FINAL_GOAL §D1 mandatory names plus 2 helpers used by the
+  pull-pants choreography.
+- `packages/client/src/audio/bgm.ts` — 3-variant BGM
+  (`lobby`/`battle`/`victory`) with cross-fade. Each variant is a
+  16-step pentatonic lead+bass loop dispatched through the shared
+  `zzfx()` voice. Cross-fade scales per-tick volume linearly
+  between active and previous variant over `CROSSFADE_DURATION_MS`
+  (400 ms — within the FINAL_GOAL §D2 ≤500 ms budget). Logical
+  clock decoupled from `performance.now()` so vitest fake timers
+  drive the ramp deterministically.
+- `packages/client/src/audio/index.ts` — barrel export.
+- `packages/client/src/audio/audio.test.ts` — 12 vitest cases:
+  mute persistence (key + round-trip + survives module reload),
+  preset enumeration (the 9 §D1 names), cross-fade lands within
+  budget, mute-mid-loop preserves variant, etc.
+- `packages/client/vitest.config.ts` — separate from `vite.config.ts`
+  so the test harness uses jsdom without affecting the build pipeline.
+
+**Files modified:**
+
+- `packages/client/src/components/HandPicker.tsx` — `onClick` now
+  calls `unlockAudio()` then `play('tap')` so the very first user
+  gesture unlocks the AudioContext, satisfying §D3 autoplay-policy.
+- `packages/client/src/canvas/EffectPlayer.ts` — wires SFX into the
+  Effect[] choreography. `reveal` on tie + action opener; `pull`
+  + `clothTear` + delayed `gasp` at PULL_PANTS; `chop` + delayed
+  `thud` at CHOP STRIKE.
+- `packages/client/src/pages/Game.tsx` — replaces inline mute state
+  with `audioIsMuted()`/`audioSetMuted()`, mounts BGM with
+  `startBgm('lobby')`, cross-fades to `battle` during ACTION/RESOLVE/
+  TIE phases, to `victory` on game-over, back to `lobby` on result
+  screen. `playSfx('roundStart')` chimes between rounds; final
+  outcome triggers `victory` or `defeat` SFX. Mute button onToggle
+  calls `unlockAudio()` first so re-unmuting after page-load actually
+  resumes audio.
+
+**Observed:**
+- `pnpm test` green: 62 shared + 12 client = **74 tests passing**.
+- `pnpm -r typecheck` green across all 3 packages.
+- `pnpm build` green: client gzip = **146 kB** (FINAL_GOAL §E ≤300 kB
+  passed with margin), server tsup 21 ms, shared tsc clean.
+- Cross-fade test: `setVariant('battle')` after `startBgm('lobby')`
+  reports `isCrossfading()===true`; advancing fake timers by 600 ms
+  (CROSSFADE_DURATION_MS + 200) flips it to `false` with active
+  variant `battle` — §D2 budget asserted at runtime via
+  `expect(CROSSFADE_DURATION_MS).toBeLessThanOrEqual(500)`.
+- Module reload test: `localStorage.setItem('xdyb.muted', '1')` →
+  `vi.resetModules()` → fresh `import('./zzfx.js')` reports
+  `isMuted()===true` — §D3 persistence-survives-reload asserted.
+
+**Not in this iteration (still outstanding from verdict):**
+- Headless sim CLI in `packages/server/src/sim.ts` (still a stub).
+- Bot registry + seeded RNG in `packages/shared/src/game/bots/`.
+- Particle systems / camera / screen shake.
+- Socket.IO Room + Landing/Lobby pages.
+- GitHub Actions CI.
