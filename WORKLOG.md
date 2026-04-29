@@ -145,3 +145,74 @@ is **handled**, not treated as automatic tie") is satisfied.
 - server/sim.ts wiring + Socket.IO Room + matchmaking
 - client React + PixiJS bring-up
 - GitHub Actions CI
+
+---
+
+## Iteration 4 — client Vite entry + React bring-up (S-045)
+
+**What:** Unbroke `pnpm build`. The client package had no `index.html`,
+no `vite.config.ts`, and `src/main.ts` was a console.log stub — Vite
+exited with `Could not resolve entry module index.html`. Created the
+Vite entry HTML, the React entrypoint, a placeholder `App.tsx` shell,
+and a Vite config wired for `@vitejs/plugin-react` + the spec port
+(5173, strictPort). Removed the obsolete `main.ts` stub.
+
+**Files changed:**
+- `packages/client/index.html` (new — `<div id="root">` +
+  `<script type="module" src="/src/main.tsx">`, inline base styles
+  to avoid a flash-of-blank-page before React mounts)
+- `packages/client/src/main.tsx` (new — `ReactDOM.createRoot` mount
+  inside `React.StrictMode`, throws if `#root` missing, keeps the
+  v1-style `[xdyb-client] bootstrap` console line so the existing
+  workspace smoke-trace still works)
+- `packages/client/src/App.tsx` (new — placeholder shell rendering
+  the rhyme `小刀一把，来到你家，扒你裤衩，直接咔嚓！` so dev/preview
+  no longer shows a blank page; pure inline styles, no Tailwind dep
+  yet — that arrives with the real Landing/Lobby pages)
+- `packages/client/vite.config.ts` (new — `@vitejs/plugin-react`,
+  `server.port: 5173 strictPort: true`, build target ES2022,
+  sourcemaps on for the bring-up phase)
+- `packages/client/src/main.ts` (deleted — superseded by main.tsx)
+
+**Observed:**
+- `pnpm --filter @xdyb/client build` → exits 0; produces
+  `dist/index.html` (0.84 kB → 0.48 kB gzip) and
+  `dist/assets/index-*.js` (143.60 kB → **46.51 kB gzip**, well
+  under the FINAL_GOAL §E3 300 kB ceiling for the code portion).
+- `pnpm build` (root) → all three packages build: shared (no-op),
+  server tsup ESM build success, client vite build success.
+- `pnpm --filter @xdyb/client typecheck` → exits 0.
+- `pnpm test` (root) → exits 0; shared still 46/46 in 16 ms,
+  client vitest exits 0 with no test files (passWithNoTests).
+- Dev-server smoke (started on :5201 because v1's vite already
+  owned :5173 — config still pins 5173 for the actual workflow):
+  `GET /` → 200 with the expected `<title>小刀一把 · xiaodaoyiba</title>`,
+  `<div id="root">`, `<script src="/src/main.tsx">`. `GET /src/main.tsx`
+  → 200, transformed JSX with React-Refresh hooks injected.
+  `GET /@fs/.../shared/src/index.ts` → 200, confirming the workspace
+  symlink resolves through Vite at dev time.
+- **End-to-end runtime smoke** (jsdom, no Chromium needed): loaded
+  the *built* bundle into a JSDOM document, executed it, observed
+  `#root.children = 1`, `innerHTML` 765 chars, `<h1>` text =
+  `小刀一把`, console emits `[xdyb-client] bootstrap — shared@0.0.1
+  action=4000ms`, **zero runtime errors**. React mount works on the
+  production bundle, not just in dev.
+
+**Acceptance:** FINAL_GOAL §E3 build gate (`pnpm build` exits 0
+producing `packages/client/dist/index.html` + JS bundle) — passes.
+The client package can now be served / iterated on; subsequent
+iterations layer in Tailwind, the Landing/Lobby/Game pages, the
+PixiJS GameStage, and Socket.IO wiring on top of this entry.
+
+**Not in this iteration (still deferred):**
+- shared/game/engine.ts (resolveRound)
+- shared/game/types.ts + effects.ts
+- shared/game/bots/* + seedRng.ts
+- shared/narrative/lines.ts (≥5 tie variants)
+- server/sim.ts argv parsing + JSONL output (S-046 candidate)
+- server Socket.IO + Room.ts + matchmaking.ts
+- client Tailwind config / Landing / Lobby / Game pages
+- client canvas/* (PixiJS GameStage, parallax, particles, camera)
+- client store/socket/audio/palette
+- scripts/gen-sprites.mjs + scripts/smoke-headless.mjs
+- GitHub Actions CI (.github/workflows/ci.yml)
