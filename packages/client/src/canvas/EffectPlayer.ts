@@ -34,6 +34,7 @@ import {
   TIE_NARRATION_HOLD_MS,
 } from '@xdyb/shared';
 import type { Character } from './characters/Character.js';
+import type { Camera } from './camera/index.js';
 import { play as playSfx } from '../audio/presets.js';
 
 /** A subset of the four particle emitters EffectPlayer drives. The host
@@ -63,6 +64,10 @@ export interface EffectPlayerScene {
   cloth?: ParticleSink;
   woodChips?: ParticleSink;
   confetti?: ParticleSink;
+  /** Optional camera handle. EffectPlayer fires shake() and zoomTo()
+   *  at PHASE_START boundaries (FINAL_GOAL §C4). Absent on barebones
+   *  scenes (e.g. unit tests) — calls degrade to silent no-ops. */
+  camera?: Camera;
   /** Optional viewport dims for confetti positioning (centered top of
    *  screen). Falls back to 0 if not provided. */
   getViewportSize?: () => { width: number; height: number };
@@ -131,11 +136,14 @@ export class EffectPlayer {
     }
   }
 
-  /** Cancel pending dispatches. Idempotent. */
+  /** Cancel pending dispatches. Idempotent. Also resets the camera so
+   *  a half-played zoom/shake doesn't leak into the next round (e.g.
+   *  if the user navigates away mid-PULL_PANTS). */
   cancel(): void {
     for (const id of this.timers) window.clearTimeout(id);
     this.timers = [];
     this.active = false;
+    this.scene.camera?.reset();
   }
 
   /** Returns true while a play() is in flight. */
@@ -288,6 +296,18 @@ export class EffectPlayer {
           actor.setState('PULL');
           victim.setState('SHAME');
           victim.slideTopPantsDown(PHASE_T_PULL_PANTS);
+          // Camera juice (FINAL_GOAL §C4): zoom in on the attacker over
+          // the entire PULL_PANTS phase so their face/grab pose blooms
+          // forward as the briefs slide. Anchor on the actor's current
+          // world position so the zoom origin tracks them, not the
+          // origin. ease-out matches the spec.
+          this.scene.camera?.zoomTo(
+            actor.view.x,
+            actor.view.y - 64,
+            1.1,
+            PHASE_T_PULL_PANTS,
+            'out',
+          );
           // SFX stack: pull whoop + cloth tear (layered) + a victim gasp
           // 60ms in so the voice reads as reaction not part of the rip.
           playSfx('pull');
@@ -327,6 +347,10 @@ export class EffectPlayer {
       // canvas — we use it only via the post-action snapshot).
       scheduleAt(this.timers, t0, atStrike, () => {
         actor.setState('STRIKE');
+        // Subtle Y-biased thump on every STRIKE (FINAL_GOAL §C4:
+        // amp 8 px, 80 ms). Reads as the punch downbeat regardless
+        // of whether the strike connects or just flourishes.
+        this.scene.camera?.shake({ amp: 8, ms: 80, axis: 'y' });
         if (action.kind === 'CHOP') {
           // Sharp metallic chop on contact + low thud follow-up at the
           // IMPACT phase boundary so the house-damage hit registers
@@ -345,14 +369,31 @@ export class EffectPlayer {
               chips.spawn(6, cx, cy);
             });
           }
+          // KO shake (§C4: amp 16 px, 200 ms, X-biased recoil) — fires
+          // on CHOP rounds at IMPACT (atStrike + STRIKE_DURATION=600).
+          // The shake superposes on the lingering STRIKE shake, so the
+          // viewer feels the hit land twice: the swing thump, then the
+          // larger follow-through as the victim crumples.
+          scheduleAt(this.timers, t0, atStrike + 600, () => {
+            this.scene.camera?.shake({ amp: 16, ms: 200, axis: 'x' });
+          });
         }
       });
 
       // RETURN: walk back to home spot in IDLE. Uses ease-in-out so the
-      // actor doesn't overshoot the home spot.
+      // actor doesn't overshoot the home spot. Camera also pulls back
+      // to neutral 1.0 over the RETURN window so the next round starts
+      // un-zoomed (§C4 zoom is per-action, not persistent).
       scheduleAt(this.timers, t0, atReturn, () => {
         actor.setState('IDLE');
         void actor.moveTo(actorHomeX, PHASE_T_RETURN, 'in-out');
+        this.scene.camera?.zoomTo(
+          actor.view.x,
+          actor.view.y - 64,
+          1.0,
+          PHASE_T_RETURN,
+          'in-out',
+        );
       });
 
       // After the slide completes, lock pants-down so the briefs

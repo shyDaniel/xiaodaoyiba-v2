@@ -1079,3 +1079,42 @@ dt clamp, and destroys on teardown. `EffectPlayer` exposes a tiny
 - `packages/client/src/canvas/GameStage.tsx` (modify — instantiate +
   tick + teardown)
 - `WORKLOG.md` (this entry)
+
+---
+
+## Iteration 25 — §C4 Camera + ScreenShake (S-302)
+
+**What:** Closed §C4 — packages/client/src/canvas/camera/ now exists
+with Camera.ts (parent transform across the four parallax layers,
+zoomTo() with linear/in-out/out easing, anchor recentering on resize)
+and ScreenShake.ts (stack of decaying additive offsets, X/Y/XY axis
+bias, deterministic via injectable RNG). EffectPlayer fires
+zoomTo(actor, 1.1, 900ms, ease-out) at PULL_PANTS PHASE_START,
+shake({amp:8, ms:80, axis:y}) at every STRIKE PHASE_START, and
+shake({amp:16, ms:200, axis:x}) on CHOP rounds at IMPACT
+(STRIKE+600ms). Camera pulls back to 1.0 across PHASE_T_RETURN so the
+next round starts un-zoomed; cancel() resets the camera so a stranded
+zoom doesn't leak between rounds. GameStage wires bg(0.1)/mountain
+(0.3)/gameplay(1.0)/foreground(1.3) parallax factors and recenters
+anchors on every resize.
+
+**Acceptance:** pnpm test → 118/118 (62 shared + 21 server + 35
+client; +13 new camera tests covering STRIKE decay <80ms, KO peak >
+STRIKE peak, additive superposition, linear vs ease-out scale curves,
+zero-ms instant zoom, and per-layer parallax differential
+sky=0.1×/gameplay=1×/foreground=1.3× of camera offset). pnpm
+typecheck → 0 errors. pnpm build → client gzip 217 KB (under 300 KB
+§E3 ceiling).
+
+**Files touched:**
+- `packages/client/src/canvas/camera/Camera.ts` (NEW)
+- `packages/client/src/canvas/camera/ScreenShake.ts` (NEW)
+- `packages/client/src/canvas/camera/index.ts` (NEW)
+- `packages/client/src/canvas/camera/camera.test.ts` (NEW)
+- `packages/client/src/canvas/EffectPlayer.ts` (modify — camera
+  field on scene, zoomTo on PULL_PANTS, shake on STRIKE+IMPACT,
+  zoomTo back on RETURN, reset on cancel)
+- `packages/client/src/canvas/GameStage.tsx` (modify — instantiate
+  Camera, register four layers with parallax+anchor, drive update()
+  in ticker, recenterAnchors() on resize)
+- `WORKLOG.md` (this entry)

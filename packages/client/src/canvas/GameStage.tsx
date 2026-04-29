@@ -32,6 +32,7 @@ import {
   WoodChipEmitter,
   ConfettiEmitter,
 } from './particles/index.js';
+import { Camera } from './camera/index.js';
 
 export interface StagePlayer {
   id: string;
@@ -78,6 +79,7 @@ interface SceneRefs {
   homeX: Map<string, number>;
   resizeObserver: ResizeObserver;
   effectPlayer: EffectPlayer;
+  camera: Camera;
   dust: DustEmitter;
   cloth: ClothEmitter;
   woodChips: WoodChipEmitter;
@@ -171,6 +173,24 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
         gameplayLayer.addChild(woodChips.view);
         fgLayer.addChild(confetti.view);
 
+        // Camera owns translate/scale of all four parallax layers.
+        // Per-layer parallax factors per FINAL_GOAL §C5:
+        //   sky      0.1   (slowest, almost stationary on shake)
+        //   mountain 0.3   (slow drift)
+        //   gameplay 1.0   (1:1 with camera)
+        //   foreground 1.3 (more than 1:1 — closer than gameplay)
+        // Sky/mountain layers don't scale with zoom (a panorama doesn't
+        // bloom); gameplay+foreground do. Anchors center each layer
+        // around the screen midpoint so a zoom-in keeps the visible
+        // composition centered rather than pulling toward (0,0).
+        const camera = new Camera();
+        const cx = w / 2;
+        const cy = h / 2;
+        camera.addLayer({ container: bgLayer, parallax: 0.1, zooms: false, anchorX: cx, anchorY: cy });
+        camera.addLayer({ container: mountainLayer, parallax: 0.3, zooms: false, anchorX: cx, anchorY: cy });
+        camera.addLayer({ container: gameplayLayer, parallax: 1.0, anchorX: cx, anchorY: cy });
+        camera.addLayer({ container: fgLayer, parallax: 1.3, anchorX: cx, anchorY: cy });
+
         // EffectPlayer reads the live characters/homeX maps via these
         // closures — so it always sees the current scene, even after
         // reconcile cycles.
@@ -181,6 +201,7 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
           cloth,
           woodChips,
           confetti,
+          camera,
           getViewportSize: () => ({
             width: app.screen.width,
             height: app.screen.height,
@@ -204,6 +225,7 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
           cloth,
           woodChips,
           confetti,
+          camera,
           resizeObserver: new ResizeObserver(() => {
             const ww = Math.max(1, host.clientWidth);
             const hh = Math.max(1, host.clientHeight);
@@ -213,6 +235,11 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
             ground.resize(ww, hh);
             fg.resize(ww, hh);
             layoutPlayers(refs);
+            // Recenter camera anchors on the new viewport center so a
+            // resize during a zoom doesn't pull the composition off
+            // screen. Cheaper than a full re-add: the Camera's layer
+            // list is small (4 entries) and anchors are public.
+            camera.recenterAnchors(ww / 2, hh / 2);
           }),
           effectPlayer,
         };
@@ -271,6 +298,10 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
           cloth.update(dt);
           woodChips.update(dt);
           confetti.update(dt);
+          // Camera last — its transforms read positions just written by
+          // characters/particles this frame, so applying camera transforms
+          // after gameplay updates avoids a one-frame lag.
+          camera.update(dt);
         };
         app.ticker.add(tick);
 
