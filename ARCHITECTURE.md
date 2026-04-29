@@ -75,6 +75,30 @@ committed code. Every package extends this base.
   advance), and gives each bot its own seeded RNG + diversified strategy
   (counter / random / iron / mirror, round-robin assigned).
 
+### N≥3 RPS resolution rule (canonical)
+
+`packages/shared/src/game/rps.ts:resolveRps()` — pure, no I/O. Behaviour by
+number of distinct shapes thrown:
+
+| `unique.size` | Counts                          | Outcome                                       | `reason`     |
+| ------------- | ------------------------------- | --------------------------------------------- | ------------ |
+| 1             | e.g. {R:n}                      | tie                                           | `all-same`   |
+| 2             | e.g. {R:a, P:b}                 | classical RPS — winning shape advances        | `two-way`    |
+| 3 (majority)  | one shape strictly highest      | majority shape's players win, others lose     | `majority`   |
+| 3 (outlier)   | tie at top, one shape strictly lowest | lone-shape players win ("outlier survives") | `outlier`    |
+| 3 (all equal) | {R:k, P:k, S:k}                 | tie                                           | `all-equal`  |
+| 0 throws      | empty                           | tie                                           | `empty`      |
+
+Important nuance for the 2-way case: the **winning shape**, not the
+**majority headcount**, decides who advances. 4 SCISSORS + 2 ROCK is a
+ROCK win, not a SCISSORS win — the `BEATS` relation is canonical, not
+democratic. Only the 3-way path (where there is no single beats-relation
+to apply) falls back to counting heads.
+
+The truth-table coverage lives in `packages/shared/src/game/rps.test.ts`
+(46 cases across the 1/2/3-distinct × 2/3/4/5/6-player matrix), and is the
+explicit regression guard against the v1 `unique.size !== 2 → tie` bug.
+
 ## Build / install pipeline
 
 ```

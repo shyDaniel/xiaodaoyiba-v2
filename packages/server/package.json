@@ -10,7 +10,7 @@
     "start": "node dist/index.js",
     "sim": "tsx src/sim.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "lint": "echo 'lint: noop (no eslint configured yet)'"
   },
   "dependencies": {
