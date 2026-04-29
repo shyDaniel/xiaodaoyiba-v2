@@ -216,3 +216,96 @@ PixiJS GameStage, and Socket.IO wiring on top of this entry.
 - client store/socket/audio/palette
 - scripts/gen-sprites.mjs + scripts/smoke-headless.mjs
 - GitHub Actions CI (.github/workflows/ci.yml)
+
+---
+
+## Iteration 5 — pure round engine + Effect[] choreography (S-059)
+
+**What:** Implemented `packages/shared/src/game/engine.ts` exporting the
+pure `resolveRound(state, round, inputs, options)` function — the canonical
+state-advancing primitive that sim, server, and client all consume. The
+function composes `resolveRps()` (RPS majority/outlier) with action
+selection (`ALIVE_CLOTHED → PULL_PANTS`, `ALIVE_PANTS_DOWN → CHOP`),
+narration emission (built-in narrator with 5-variant tie pool), and
+5-phase timeline tagging (PREP/RUSH/PULL_PANTS/STRIKE/IMPACT/RETURN with
+`atMs` cumulative offsets summing to exactly `ACTION_TOTAL_MS`, all
+imported from `timing.ts`). Also added `game/types.ts` (PlayerState,
+PlayerStage, ActionKind, ActionPhase, RoundInputs) and `game/effects.ts`
+(the discriminated `Effect` union — RoundStart, TieNarration, RpsResolved,
+PhaseStart, Action, SetStage, Narration, GameOver — plus an
+`effectsOfType<T>()` typed filter helper).
+
+**Files changed:**
+- `packages/shared/src/game/types.ts` (new — minimal core state types,
+  no v1 buffs/houseHp entanglement; PlayerId/RpsChoice imported from
+  `./rps.js`, not re-exported, to keep the barrel single-sourced)
+- `packages/shared/src/game/effects.ts` (new — Effect discriminated
+  union with timing-tagged variants; `effectsOfType<T>` typed filter)
+- `packages/shared/src/game/engine.ts` (new — pure resolveRound with
+  module-load self-test that the 5-phase timeline sums to
+  ACTION_TOTAL_MS; PHASE_OFFSETS exported as a derived constant;
+  pluggable Narrator interface; default narrator with 5 distinct
+  all-equal tie variants + a separate all-same line)
+- `packages/shared/src/game/engine.test.ts` (new — 16 vitest cases:
+  PHASE_OFFSETS sanity, the §A acceptance 4-player RPSR scenario with
+  full effect-shape assertions, tie-path emission, pants_down → CHOP
+  transition with isGameOver/winnerId, DEAD-player skipping, explicit
+  inputs.targets override and fallback, input-non-mutation purity guard,
+  20-round mulberry32-seeded simulation verifying state monotonicity
+  and per-round timeline integrity)
+- `packages/shared/src/game/index.ts` (barrel re-exports `./types.js`,
+  `./effects.js`, `./engine.js`)
+- `ARCHITECTURE.md` (new "Round engine (canonical)" section documenting
+  inputs/outputs, the action-selection rule, the self-validating phase
+  timeline, and the test-coverage map)
+
+**Observed:**
+- `pnpm -r exec tsc --noEmit` exits **0** across all three packages.
+- `pnpm --filter @xdyb/shared test` → **62/62 green in ~30ms** (46 rps
+  + 16 engine; well under FINAL_GOAL §B1's < 5s budget).
+- `pnpm test` (root) → exits 0 across all three packages.
+- `pnpm build` → server tsup ESM and client vite both succeed; client
+  bundle still 46.82 kB gzipped (unchanged — engine code is shared
+  but not yet imported by the client; will land when Game.tsx +
+  EffectPlayer arrive).
+- **End-to-end driver smoke** from the server package via tsx, importing
+  `@xdyb/shared`:
+  - 4-player `{a:R, b:P, c:S, d:R}` (the iteration brief's acceptance
+    scenario) → `winners=[a,d]`, `losers=[b,c]`, `winningChoice=ROCK`,
+    `reason=majority`, 14 effects total: ROUND_START, RPS_RESOLVED,
+    six PHASE_START with `atMs=[0,300,900,1800,2400,3200]` and
+    `durationMs=[300,600,900,600,800,800]` summing to 4000, two
+    ACTION effects at atMs=900 (`a→b PULL_PANTS`, `d→c PULL_PANTS`),
+    two SET_STAGE at atMs=1300 (= PULL_PANTS + SHAME_FRAME_HOLD_MS),
+    two NARRATION lines (`小红一个箭步上前，扒下了小明的裤衩` /
+    `小芳一个箭步上前，扒下了小刚的裤衩`). Post-round stages exactly
+    `a=ALIVE_CLOTHED b=ALIVE_PANTS_DOWN c=ALIVE_PANTS_DOWN d=ALIVE_CLOTHED`.
+  - 20-round mulberry32(seed=42) random-throw sim with 4 players → game
+    terminates at round 5 with winner=d, ties=1/5=20% (under the §A2
+    30% gate), no exceptions, no infinite loop.
+
+**Acceptance:** FINAL_GOAL §A's "4-player ROCK,PAPER,SCISSORS,ROCK →
+winner picks loser → emits PULL_PANTS effect with phase durations
+matching timing.ts" is satisfied; the 20-round simulation gate from the
+iteration brief passes; the §B4 "headless sim ↔ live game timing match"
+contract is now structurally enforceable because every consumer
+imports from a single `timing.ts` and the engine self-validates the sum.
+
+**Not in this iteration (deferred to next):**
+- shared/game/bots/* (counter, random, iron, mirror) + seedRng.ts —
+  S-022's diversifier needs the engine to call into; it's the next
+  unblock now that engine.ts exists.
+- shared/narrative/lines.ts — the engine ships a 5-variant tie pool +
+  templated action lines as a built-in default; the richer pool
+  (≥5 colloquial all-equal variants + per-action templates with
+  per-player color assignment hashing for BattleLog) is its own module.
+- server/sim.ts argv parser + JSONL/CSV output (now unblocked: it can
+  call resolveRound + a bot to fill `inputs.choices` and stream the
+  effect log).
+- server Socket.IO + Room.ts + matchmaking.ts (likewise unblocked).
+- client canvas/* (PixiJS GameStage / parallax / particles / camera /
+  EffectPlayer consuming the engine's Effect[]).
+- client Tailwind + Landing/Lobby/Game pages, BattleLog, HandPicker.
+- scripts/gen-sprites.mjs + scripts/smoke-headless.mjs.
+- GitHub Actions CI.
+

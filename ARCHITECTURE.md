@@ -99,6 +99,61 @@ The truth-table coverage lives in `packages/shared/src/game/rps.test.ts`
 (46 cases across the 1/2/3-distinct × 2/3/4/5/6-player matrix), and is the
 explicit regression guard against the v1 `unique.size !== 2 → tie` bug.
 
+### Round engine (canonical)
+
+`packages/shared/src/game/engine.ts:resolveRound(state, round, inputs, options)`
+is **pure**: same inputs → same outputs, no I/O, no clock, no `Math.random`.
+It is the only primitive that advances game state — sim CLI, Socket.IO
+server, and client EffectPlayer all call this single function.
+
+Inputs:
+- `state: ReadonlyArray<PlayerState>` — players in display order, including
+  any DEAD players from previous rounds (retained for history; filtered out
+  of RPS resolution and never acted on).
+- `round: number` — 1-based round counter (used for narration prefixes and
+  round-stable tie-line variant selection).
+- `inputs.choices: Record<PlayerId, RpsChoice>` — RPS submissions. Stale
+  entries for DEAD players are silently ignored.
+- `inputs.targets?: Record<PlayerId, PlayerId>` — optional explicit
+  actor → loser pairing. If a winner doesn't supply a target (or supplies
+  an invalid one), the engine pairs winners with losers in winners-iteration
+  order, claiming the first not-yet-claimed loser. Each loser is acted on
+  at most once per round.
+
+Outputs:
+- `players: PlayerState[]` — fresh array; original is never mutated.
+- `effects: Effect[]` — flat ordered choreography. Always starts with
+  `ROUND_START`; on a tie round emits `TIE_NARRATION` + a `NARRATION` mirror
+  for log uniformity; on an action round emits `RPS_RESOLVED`, the full 6
+  `PHASE_START` boundaries (PREP/RUSH/PULL_PANTS/STRIKE/IMPACT/RETURN with
+  `atMs` summing to exactly `ACTION_TOTAL_MS`), then per-pairing `ACTION` +
+  `SET_STAGE` + `NARRATION`. `GAME_OVER` appends if ≤ 1 player remains alive.
+- `narration: string` — human-readable Chinese, one line per pairing,
+  joined by `\n`. Drives the BattleLog right rail and the sim CLI's
+  grep-able output.
+- `rps: RpsResolution` — surfaced for sim CSV / tests; matches what
+  `resolveRps()` returned internally.
+- `isGameOver: boolean`, `winnerId: PlayerId | null`.
+
+Action selection rule: the *target's pre-round stage* picks the kind:
+`ALIVE_CLOTHED → PULL_PANTS`, `ALIVE_PANTS_DOWN → CHOP`, `DEAD → NONE`. So
+a player who is already pants-down dies on their next loss — exactly the
+v1 spec preserved.
+
+The 5-phase action timeline is computed at module-load from `timing.ts` and
+self-validated to sum to `ACTION_TOTAL_MS` — a typo in `timing.ts` throws
+on import rather than producing a desynced choreography. `PHASE_OFFSETS`
+(re-exported from the engine) gives callers the cumulative-offset map
+without iterating the timeline.
+
+Test coverage: `packages/shared/src/game/engine.test.ts` (16 cases) covers
+the FINAL_GOAL §A acceptance scenario (4-player ROCK,PAPER,SCISSORS,ROCK →
+majority ROCK → 2 PULL_PANTS pairings with phase durations matching
+`timing.ts`), tie-path emission, the pants_down → DEAD CHOP transition,
+DEAD-player skipping, explicit target overrides, input non-mutation, and a
+20-round mulberry32-seeded simulation that verifies state monotonicity
+(alive count never increases) and timeline integrity across rounds.
+
 ## Build / install pipeline
 
 ```
