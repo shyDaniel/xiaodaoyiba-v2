@@ -580,3 +580,19 @@ the mute button to a real audio source.
 - Particle systems / camera / screen shake.
 - Socket.IO Room + Landing/Lobby pages.
 - GitHub Actions CI.
+
+---
+
+## Iteration 16 — S-220 (.github/workflows/ci.yml)
+
+Added `.github/workflows/ci.yml` — the §E5 green-gate-to-merge prerequisite.
+Workflow runs on push + PR to main, uses `pnpm/action-setup@v4` (pnpm 9.15.9)
++ `actions/setup-node@v4` (Node 20, pnpm-store cached), then runs
+`pnpm install --frozen-lockfile`, `pnpm test`, `pnpm build`, and the
+acceptance smoke `pnpm sim --players 4 --bots counter,random,iron,mirror
+--rounds 20 --seed 1`. YAML parses clean (validated with `python3 -c
+"import yaml; yaml.safe_load(open(...))"`); locally `pnpm test` passes
+74 tests, `pnpm build` produces server + client bundles, `pnpm sim ...`
+exits 0 (today still the bootstrap stub — flag plumbing comes with the
+sim engine subtask, but the workflow already invokes the canonical
+acceptance command so it auto-tightens once sim is wired).
