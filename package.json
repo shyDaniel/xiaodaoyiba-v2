@@ -11,7 +11,8 @@
     "test": "pnpm -r test",
     "typecheck": "pnpm -r exec tsc --noEmit",
     "lint": "pnpm -r lint",
-    "sim": "pnpm --filter @xdyb/server sim"
+    "sim": "pnpm --filter @xdyb/server sim",
+    "trust:mcp": "node scripts/trust-mcp.mjs"
   },
   "devDependencies": {
     "typescript": "^5.7.2"

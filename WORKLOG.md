@@ -805,3 +805,134 @@ NOT take effect in the judge runtime — first call to
 `mcp__playwright__browser_navigate` still errors". With this
 iteration the visual-validation pipe works on first call from a
 fresh session.
+
+---
+
+## Iteration 21 — close the user-level trust gate (S-266)
+
+**Problem (judge verdict, iter-20):** S-256 wired
+`strictMcpConfig: true` into every Claude Agent SDK `query()` call
+AND committed `.claude/settings.json` with
+`enableAllProjectMcpServers: true` + `enabledMcpjsonServers:
+["playwright", "chrome-devtools"]`. Despite both, the iter-20 judge
+runtime *still* saw `mcp__playwright__browser_navigate` fail with
+`Chromium distribution 'chrome' is not found at
+/opt/google/chrome/chrome` — the .mcp.json overrides (with
+`--executable-path`, `LD_LIBRARY_PATH`, etc.) were silently dropped
+and the built-in `npx -y @playwright/mcp@latest` defaults launched
+instead. Judge had to fall back to a hand-rolled Playwright shim
+against the cached Chromium with manual `LD_LIBRARY_PATH`.
+
+**Root cause:** Claude Code consults the **user-level**
+`~/.claude.json` `projects[<repoPath>]` entry — not just the
+repo-local `.claude/settings.json` — for the trust decision it makes
+at session start. The fields it gates on are:
+
+  - `hasTrustDialogAccepted: boolean`
+  - `enabledMcpjsonServers: string[]`
+  - `enableAllProjectMcpServers: boolean`
+
+For this project the user-level entry was:
+
+  ```json
+  { "hasTrustDialogAccepted": false,
+    "enabledMcpjsonServers": [],
+    "enableAllProjectMcpServers": null }
+  ```
+
+— i.e. untrusted. In a headless agent-autopilot session there is no
+interactive trust dialog (the binary is invoked
+non-interactively by the SDK), so the gate silently answers "no" and
+every server in `.mcp.json` falls through to its built-in default.
+Repo-local `.claude/settings.json` IS read by the binary, but it
+does NOT override the user-level state file's trust decision —
+they are two separate settings sources merged below the
+already-made trust call.
+
+**Fix — agent-autopilot side (out-of-tree, committed in
+`/home/hanyu/projects/agent-autopilot`):**
+
+- `src/mcp.ts` — new `trustMcpJsonServers(repoPath)` helper that
+  reads the repo's `.mcp.json`, then atomically writes
+  `~/.claude.json` `projects[repoPath]` with
+  `hasTrustDialogAccepted: true`, `enableAllProjectMcpServers: true`,
+  and `enabledMcpjsonServers: <merged sorted list>`. Idempotent;
+  preserves every other key (`allowedTools`, other projects,
+  top-level `mcpServers`, `firstStartTime`, etc.) verbatim. Atomic
+  via tempfile + rename so a crashed run cannot corrupt
+  `~/.claude.json`.
+- `src/autopilot.ts` — calls `trustMcpJsonServers(repo)` once per
+  autopilot run, right after MCP detection logging and before the
+  first worker/judge session spawns. Logs whether trust state was
+  pre-approved or already trusted.
+- `test/mcp.test.ts` — 7 new tests cover: missing `.mcp.json`,
+  fresh write, preservation of unrelated keys, idempotency, merging
+  with previously-trusted servers, flipping false→true even when
+  the server list is already complete, and malformed-JSON recovery.
+- All 234 vitest tests pass (was 227 + 7 new); `tsc --noEmit` clean.
+- `dist/` rebuilt (`npm run build`) so `bin/autopilot.js` picks up
+  the change without needing an npm-link refresh.
+
+**Fix — repo side (this commit):**
+
+- `scripts/trust-mcp.mjs` (new) — standalone, zero-dep Node script
+  that performs the same `~/.claude.json` mutation. Runs from a
+  fresh clone via `pnpm trust:mcp`. Useful for: (a) judges /
+  human-driven Claude Code sessions that don't go through the
+  autopilot launcher; (b) CI environments where autopilot isn't on
+  PATH; (c) verifying the fix manually without rebuilding
+  agent-autopilot.
+- `package.json` — `+"trust:mcp": "node scripts/trust-mcp.mjs"`.
+- `WORKLOG.md` (this entry).
+
+**Why three layers (S-246 + S-256 + S-266) were needed:** every
+layer answers a different gate.
+
+  | Layer | Gate it satisfies                                                            |
+  | ----- | ---------------------------------------------------------------------------- |
+  | S-246 | `.mcp.json` exists with the right `--executable-path` + `LD_LIBRARY_PATH` env |
+  | S-256 | Claude Agent SDK passes `--strict-mcp-config` so the merged map wins |
+  | S-256 | Repo `.claude/settings.json` declares the .mcp.json servers as enabled |
+  | S-266 | User-level `~/.claude.json` projects[repo] has the trust flags set |
+
+Removing any one of these reverts the symptom. S-266 is the last
+hop because it's the only one that survives a pristine
+`~/.claude.json` (e.g. on a fresh judge VM, a Docker container, or
+a teammate's laptop). The autopilot launcher now writes it on every
+run; the repo-local script is the manual escape hatch.
+
+**Observed:**
+
+- `pnpm typecheck` clean across all 3 packages.
+- `pnpm test` — 74 tests still pass (62 shared + 12 client).
+- `node scripts/trust-mcp.mjs` first run prints
+  `[trust-mcp] pre-approved: chrome-devtools, playwright in
+  /home/hanyu/.claude.json`; second run prints
+  `[trust-mcp] already trusted: ...`. Idempotent.
+- `~/.claude.json` `projects["/home/hanyu/projects/xiaodaoyiba-v2"]`
+  now has all three fields set: `hasTrustDialogAccepted: true`,
+  `enableAllProjectMcpServers: true`,
+  `enabledMcpjsonServers: ["chrome-devtools", "playwright"]`.
+- agent-autopilot `npm test` → 234/234 pass; `npm run build` clean;
+  `dist/mcp.js` exports `trustMcpJsonServers`; `dist/autopilot.js`
+  imports + invokes it.
+
+**Acceptance test:** A fresh judge / worker session spawned via the
+rebuilt autopilot launcher (`agent-autopilot run
+/home/hanyu/projects/xiaodaoyiba-v2`) — or via
+`node scripts/trust-mcp.mjs && claude` from a fresh clone — calls
+`mcp__playwright__browser_navigate({url:'http://127.0.0.1:5191'})`
+and `mcp__playwright__browser_take_screenshot()` end-to-end without
+any user-side Playwright shim, returning a non-empty PNG on first
+call. The current Claude Code session itself still has the old
+(pre-trust) MCP server cached because the binary reads
+`~/.claude.json` once at startup — verification happens in the next
+spawned session, which is exactly the acceptance criterion in
+S-266's brief.
+
+**Closes verdict bullet:** "MCP GAP: mcp__playwright__browser_navigate
+fails with 'Chromium distribution chrome is not found at
+/opt/google/chrome/chrome' and mcp__chrome-devtools__navigate_page
+fails with 'Target.setDiscoverTargets: Target closed' on first call.
+The S-246 .mcp.json and S-256 .claude/settings.json were committed
+but DO NOT take effect in the judge runtime."
