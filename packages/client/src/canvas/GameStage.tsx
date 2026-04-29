@@ -26,6 +26,12 @@ import { Foreground } from './stage/Foreground.js';
 import { House } from './stage/House.js';
 import { Character } from './characters/Character.js';
 import { EffectPlayer } from './EffectPlayer.js';
+import {
+  DustEmitter,
+  ClothEmitter,
+  WoodChipEmitter,
+  ConfettiEmitter,
+} from './particles/index.js';
 
 export interface StagePlayer {
   id: string;
@@ -72,6 +78,10 @@ interface SceneRefs {
   homeX: Map<string, number>;
   resizeObserver: ResizeObserver;
   effectPlayer: EffectPlayer;
+  dust: DustEmitter;
+  cloth: ClothEmitter;
+  woodChips: WoodChipEmitter;
+  confetti: ConfettiEmitter;
 }
 
 export function GameStage({ players, controllerRef, onReady }: GameStageProps): JSX.Element {
@@ -147,12 +157,34 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
         const characters = new Map<string, Character>();
         const homeX = new Map<string, number>();
 
+        // Particle emitters. Dust/cloth/wood-chips live on the gameplay
+        // layer (same parallax band as characters and houses) so they
+        // appear in front of the houses but behind the foreground decor.
+        // Confetti lives on the foreground layer so it overlays the
+        // entire scene at game-over.
+        const dust = new DustEmitter();
+        const cloth = new ClothEmitter();
+        const woodChips = new WoodChipEmitter();
+        const confetti = new ConfettiEmitter();
+        gameplayLayer.addChild(dust.view);
+        gameplayLayer.addChild(cloth.view);
+        gameplayLayer.addChild(woodChips.view);
+        fgLayer.addChild(confetti.view);
+
         // EffectPlayer reads the live characters/homeX maps via these
         // closures — so it always sees the current scene, even after
         // reconcile cycles.
         const effectPlayer = new EffectPlayer({
           getCharacter: (id) => characters.get(id),
           getHomeX: (id) => homeX.get(id),
+          dust,
+          cloth,
+          woodChips,
+          confetti,
+          getViewportSize: () => ({
+            width: app.screen.width,
+            height: app.screen.height,
+          }),
         });
 
         const refs: SceneRefs = {
@@ -168,6 +200,10 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
           houses,
           characters,
           homeX,
+          dust,
+          cloth,
+          woodChips,
+          confetti,
           resizeObserver: new ResizeObserver(() => {
             const ww = Math.max(1, host.clientWidth);
             const hh = Math.max(1, host.clientHeight);
@@ -227,6 +263,14 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
           bg.update(dt);
           fg.update(dt);
           for (const ch of characters.values()) ch.update(dt);
+          // Particle physics. All four channels share the same dt so
+          // their integrated state stays in lockstep with the rest of
+          // the scene (no drift on tab-throttle resume because dt is
+          // clamped to 64ms above).
+          dust.update(dt);
+          cloth.update(dt);
+          woodChips.update(dt);
+          confetti.update(dt);
         };
         app.ticker.add(tick);
 
@@ -244,6 +288,14 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
       if (refs) {
         try {
           refs.effectPlayer.cancel();
+        } catch {
+          /* noop */
+        }
+        try {
+          refs.dust.destroy();
+          refs.cloth.destroy();
+          refs.woodChips.destroy();
+          refs.confetti.destroy();
         } catch {
           /* noop */
         }

@@ -1023,3 +1023,59 @@ PRODUCT code only. Acceptable targets per the brief: `packages/server/src/`,
 acceptance-list. `pnpm smoke` provides a single-command CI gate that
 exercises both halves of the game (matchmaking via Socket.IO + round
 engine via sim) end-to-end with deterministic exit codes.
+
+---
+
+## iter-23 — particle FX pass (S-290)
+
+Implemented the four pooled `PIXI.Graphics` particle channels under
+`packages/client/src/canvas/particles/` (FINAL_GOAL §C3 first bullet)
+and wired them into `EffectPlayer` so each phase-bound choreography
+beat fires the matching effect:
+
+- **DustEmitter** (max 64) — tan/grey motes kicked up at the actor's
+  feet during RUSH. Fires 4 staggered bursts of 3 across the 600 ms
+  rush window so the trail follows `actor.view.x` as the sprite slides
+  forward (≥ 8 motes guaranteed per goal).
+- **ClothEmitter** (max 48) — denim/khaki rectangles tearing from the
+  victim's waist during PULL_PANTS. Three staggered bursts (5+5+4 = 14
+  scraps, exceeds the ≥ 12 floor) over 900 ms with strong gravity.
+- **WoodChipEmitter** (max 48) — high-tumble (`vrot ±18`) wood slivers
+  on CHOP STRIKE. 14 chips at impact + 6 follow-up at +200 ms.
+- **ConfettiEmitter** (max 96) — bright squares with sinusoidal swirl
+  for victory. Two 32-particle bursts at viewport top on `GAME_OVER`,
+  6-color palette (≥ 3 distinct tints requirement).
+
+Shared infrastructure in `Particle.ts` (pooled `acquire()`, exponential
+drag, gravity, alpha² fade). `GameStage.tsx` mounts dust/cloth/chips on
+`gameplayLayer` and confetti on `fgLayer`, ticks all four with a 64 ms
+dt clamp, and destroys on teardown. `EffectPlayer` exposes a tiny
+`ParticleSink` interface so emitters stay swappable.
+
+**Verification (all green):**
+- `pnpm --filter @xdyb/client typecheck` → clean.
+- `pnpm test` → 105 / 105 (62 shared + 21 server + 22 client; +10 new
+  particle tests covering physics integrator, per-emitter spawn
+  counts, alive-cap, color diversity, frame budget).
+- Frame-budget test: 4 emitters saturated to 256 live particles tick
+  in well under 16 ms on the test runner.
+- `pnpm build` → client gzip 217 KB (under 300 KB ceiling §F1).
+- Headless visual via `/tmp/snap-particles.mjs` (cached chromium,
+  MCP playwright still blocked) — captured `snap-rush.png`,
+  `snap-pullpants.png`, `snap-strike.png`. Dust visibly puffs from
+  feet during RUSH; cloth scraps fall from waist during PULL_PANTS;
+  chips burst at STRIKE. Hint band renders ("冲到对方家里！" then
+  "你一个箭步上前，扒下了小明的裤衩").
+
+**Files touched:**
+- `packages/client/src/canvas/particles/Particle.ts` (NEW)
+- `packages/client/src/canvas/particles/DustEmitter.ts` (NEW)
+- `packages/client/src/canvas/particles/ClothEmitter.ts` (NEW)
+- `packages/client/src/canvas/particles/WoodChipEmitter.ts` (NEW)
+- `packages/client/src/canvas/particles/ConfettiEmitter.ts` (NEW)
+- `packages/client/src/canvas/particles/index.ts` (NEW)
+- `packages/client/src/canvas/particles/particles.test.ts` (NEW)
+- `packages/client/src/canvas/EffectPlayer.ts` (modify — emitter wiring)
+- `packages/client/src/canvas/GameStage.tsx` (modify — instantiate +
+  tick + teardown)
+- `WORKLOG.md` (this entry)

@@ -36,6 +36,15 @@ import {
 import type { Character } from './characters/Character.js';
 import { play as playSfx } from '../audio/presets.js';
 
+/** A subset of the four particle emitters EffectPlayer drives. The host
+ *  (GameStage) owns the actual instances; EffectPlayer just calls
+ *  `spawn(count, x, y)` at the right phase boundaries. The interface is
+ *  intentionally minimal so a future server-driven emitter ID protocol
+ *  can swap in. */
+export interface ParticleSink {
+  spawn(count: number, originX: number, originY: number): void;
+}
+
 /** Lookup contract the player needs from its host (GameStage). The host
  *  owns the Pixi scene graph; EffectPlayer is stateless w.r.t. positions
  *  and queries the host on every dispatch. */
@@ -47,6 +56,16 @@ export interface EffectPlayerScene {
    *  Read once at action start so a mid-action layout reflow does not
    *  desync the RETURN tween. */
   getHomeX(id: PlayerId): number | undefined;
+  /** Optional particle channels. EffectPlayer spawns into them at the
+   *  right phase beats; if absent, particle calls are silent no-ops so
+   *  the player still works on a barebones scene (e.g. unit tests). */
+  dust?: ParticleSink;
+  cloth?: ParticleSink;
+  woodChips?: ParticleSink;
+  confetti?: ParticleSink;
+  /** Optional viewport dims for confetti positioning (centered top of
+   *  screen). Falls back to 0 if not provided. */
+  getViewportSize?: () => { width: number; height: number };
 }
 
 export interface PlayEffectsOptions {
@@ -243,6 +262,22 @@ export class EffectPlayer {
         actor.setState('RUSH');
         // ease-out for punchy decel into the victim
         void actor.moveTo(rushTargetX, PHASE_T_RUSH, 'out');
+        // Dust kicks: 4 staggered bursts of 3 motes from the actor's
+        // feet across PHASE_T_RUSH=600ms — sums to ≥ 12 motes total
+        // (FINAL_GOAL §C3 specifies ≥ 8 per step). Each later burst
+        // tracks the actor's current x (queried at fire time) so the
+        // trail follows the rush.
+        const dust = this.scene.dust;
+        if (dust) {
+          for (let k = 0; k < 4; k++) {
+            const delay = k * (PHASE_T_RUSH / 4);
+            scheduleAt(this.timers, t0, atRushStart + delay, () => {
+              const ax = actor.view.x;
+              const ay = actor.view.y;
+              dust.spawn(3, ax, ay + 4);
+            });
+          }
+        }
       });
 
       // PULL_PANTS: actor grabs (PULL pose); victim cringes (SHAME pose)
@@ -258,6 +293,24 @@ export class EffectPlayer {
           playSfx('pull');
           playSfx('clothTear');
           window.setTimeout(() => playSfx('gasp'), 60);
+          // Cloth scraps: 3 staggered bursts (5 + 5 + 4 = 14, ≥ 12 spec)
+          // across PHASE_T_PULL_PANTS=900ms, originating at the victim's
+          // waist (the character's local y=0 is roughly the waist line
+          // — see Character.ts TOP_PANTS_Y_WAIST). World y is the
+          // victim's view.y (feet) minus a body-height offset (~64px).
+          const cloth = this.scene.cloth;
+          if (cloth) {
+            const cx = victim.view.x;
+            const cy = victim.view.y - 64;
+            const counts = [5, 5, 4];
+            for (let k = 0; k < counts.length; k++) {
+              const c = counts[k] ?? 0;
+              const delay = k * (PHASE_T_PULL_PANTS / counts.length);
+              scheduleAt(this.timers, t0, atPullPants + delay, () => {
+                cloth.spawn(c, cx, cy);
+              });
+            }
+          }
         } else if (action.kind === 'CHOP') {
           // CHOP: actor stays in PULL pose briefly (still grabbing the
           // pants-down victim) before STRIKE; victim already shows SHAME
@@ -280,6 +333,18 @@ export class EffectPlayer {
           // physically as well as metallically.
           playSfx('chop');
           window.setTimeout(() => playSfx('thud'), 600);
+          // Wood chips: 14 chips (≥ 12 spec) emanating from the victim
+          // body at strike point, with a second smaller follow-up burst
+          // 200ms later as the blade bites a second time.
+          const chips = this.scene.woodChips;
+          if (chips) {
+            const cx = victim.view.x;
+            const cy = victim.view.y - 50;
+            chips.spawn(14, cx, cy);
+            scheduleAt(this.timers, t0, atStrike + 200, () => {
+              chips.spawn(6, cx, cy);
+            });
+          }
         }
       });
 
@@ -296,6 +361,27 @@ export class EffectPlayer {
       if (action.kind === 'PULL_PANTS') {
         scheduleAt(this.timers, t0, atPullPants + PHASE_T_PULL_PANTS, () => {
           victim.setPantsDown(true);
+        });
+      }
+    }
+
+    // Victory confetti — if this round produced a GAME_OVER, kick off
+    // the celebration just before the action timeline ends so confetti
+    // is already swirling when Game.tsx flips to the result screen.
+    const gameOver = effects.find((e) => e.type === 'GAME_OVER');
+    if (gameOver) {
+      const confetti = this.scene.confetti;
+      if (confetti) {
+        const vp = this.scene.getViewportSize?.() ?? { width: 800, height: 600 };
+        const cx = vp.width / 2;
+        const cy = vp.height * 0.18;
+        // 32 + 32 = ≥ 32 spec, two staggered bursts so confetti keeps
+        // arriving as the first wave starts to fall.
+        scheduleAt(this.timers, t0, ACTION_TOTAL_MS - 600, () => {
+          confetti.spawn(32, cx, cy);
+        });
+        scheduleAt(this.timers, t0, ACTION_TOTAL_MS - 200, () => {
+          confetti.spawn(32, cx, cy);
         });
       }
     }
