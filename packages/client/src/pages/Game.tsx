@@ -8,15 +8,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ACTION_TOTAL_MS,
-  PHASE_T_PULL_PANTS,
-  TIE_NARRATION_HOLD_MS,
   resolveRound,
   type Effect,
   type PlayerState,
   type RpsChoice,
 } from '@xdyb/shared';
-import { GameStage, type StagePlayer } from '../canvas/GameStage.js';
+import {
+  GameStage,
+  type StageController,
+  type StagePlayer,
+} from '../canvas/GameStage.js';
 import { HandPicker } from '../components/HandPicker.js';
 import { BattleLog, type LogEntry, type LogVerb } from '../components/BattleLog.js';
 import { palette, toCss, playerColor } from '../palette.js';
@@ -83,6 +84,12 @@ export function GamePage(): JSX.Element {
   const [winnerId, setWinnerId] = useState<string | null>(null);
 
   const botsRef = useRef<BotProfile[]>(makeBots());
+  // Imperative handle into the canvas EffectPlayer. GameStage assigns this
+  // once Pixi finishes initializing; submitChoice() awaits a non-null value
+  // before dispatching the round timeline. This is the wiring the iter-7
+  // worker started but did not finish — without it the canvas was deaf to
+  // engine events and characters never RUSHed.
+  const stageRef = useRef<StageController | null>(null);
 
   // Persist mute
   useEffect(() => {
@@ -133,58 +140,83 @@ export function GamePage(): JSX.Element {
 
       // Phase: TIE or ACTION
       const isTie = result.rps.tie;
-      if (isTie) {
-        setPhase('TIE');
-        const tieEffects = result.effects.filter(
+      setPhase(isTie ? 'TIE' : 'ACTION');
+
+      // Delegate the entire round timeline to the canvas EffectPlayer.
+      // BattleLog rows are appended via the onNarration callback so each
+      // row lands in lockstep with the on-stage beat the engine emitted
+      // (PULL_PANTS at atMs=900, STRIKE at atMs=1800, tie at atMs=0).
+      // No more setTimeout chains in component scope — the v1
+      // entanglement v2 was supposed to eliminate.
+      const onNarration = (entry: {
+        atMs: number;
+        text: string;
+        verb: '扒' | '砍' | '闪' | '平' | '死';
+        actor?: string;
+        target?: string;
+      }): void => {
+        const actorP = entry.actor
+          ? playerStates.find((p) => p.id === entry.actor)
+          : undefined;
+        const targetP = entry.target
+          ? playerStates.find((p) => p.id === entry.target)
+          : undefined;
+        const actors = isTie
+          ? choicesToActors(choices, playerStates)
+          : [actorP, targetP]
+              .filter((p): p is PlayerState => Boolean(p))
+              .map((p) => `${p.nickname}|${p.id}`);
+        const phaseTag = isTie
+          ? 'tie'
+          : entry.verb === '砍'
+          ? 'chop'
+          : 'pull_pants';
+        appendLog(
+          {
+            round,
+            phase: phaseTag,
+            verb: entry.verb as LogVerb,
+            text: entry.text,
+            actors,
+          },
+          setLogEntries,
+        );
+      };
+
+      const stage = stageRef.current;
+      if (stage) {
+        await stage.play(result.effects, playerStates, { onNarration });
+      } else {
+        // Defensive fallback (Pixi not yet initialized) — emit a single
+        // log row + sit for the action's nominal duration so phase still
+        // advances. In practice GameStage assigns the controller before
+        // any user can throw a fist.
+        const tie = result.effects.find(
           (e): e is Extract<Effect, { type: 'TIE_NARRATION' }> =>
             e.type === 'TIE_NARRATION',
         );
-        const tieMsg = tieEffects[0]?.text ?? result.narration;
-        appendLog({
-          round,
-          phase: 'tie',
-          verb: '平',
-          text: tieMsg,
-          actors: choicesToActors(choices, playerStates),
-        }, setLogEntries);
-        await delay(TIE_NARRATION_HOLD_MS);
-      } else {
-        setPhase('ACTION');
-        // Deconstruct narration lines for log
-        const narrationEffects = result.effects.filter(
-          (e): e is Extract<Effect, { type: 'NARRATION' }> => e.type === 'NARRATION',
+        const narrations = result.effects.filter(
+          (e): e is Extract<Effect, { type: 'NARRATION' }> =>
+            e.type === 'NARRATION',
         );
-        const actionEffects = result.effects.filter(
-          (e): e is Extract<Effect, { type: 'ACTION' }> => e.type === 'ACTION',
-        );
-
-        // Schedule narration entries timed to the action playback
-        narrationEffects.forEach((eff, idx) => {
-          const action = actionEffects[idx];
-          const verb: LogVerb = action?.kind === 'CHOP' ? '砍' : '扒';
-          // Resolve to actor/target name
-          const actor = playerStates.find((p) => p.id === action?.actor);
-          const target = playerStates.find((p) => p.id === action?.target);
-          const actors = [actor, target]
-            .filter((p): p is PlayerState => Boolean(p))
-            .map((p) => `${p.nickname}|${p.id}`);
-          window.setTimeout(() => {
-            appendLog({
-              round,
-              phase: action?.kind === 'CHOP' ? 'chop' : 'pull_pants',
-              verb,
-              text: eff.text,
-              actors,
-            }, setLogEntries);
-          }, eff.atMs);
-        });
-
-        // Wait the full action timeline so visuals can play out
-        await delay(ACTION_TOTAL_MS);
+        if (tie) {
+          onNarration({ atMs: 0, text: tie.text, verb: '平' });
+        }
+        for (const nar of narrations) {
+          onNarration({
+            atMs: nar.atMs,
+            text: nar.text,
+            verb: nar.verb,
+            actor: nar.actor,
+            target: nar.target,
+          });
+        }
+        await delay(isTie ? 2000 : 4000);
       }
 
-      // Apply state from engine
+      // Apply state from engine and reset characters to home for next round
       setPlayerStates(result.players);
+      stageRef.current?.reset(result.players.map((p) => p.id));
       if (result.isGameOver) {
         setWinnerId(result.winnerId);
         const winner = result.players.find((p) => p.id === result.winnerId);
@@ -259,7 +291,7 @@ export function GamePage(): JSX.Element {
           right: 'min(30vw, 360px)',
         }}
       >
-        <GameStage players={stagePlayers} />
+        <GameStage players={stagePlayers} controllerRef={stageRef} />
       </div>
 
       {/* Top header — title + round/phase. Confined to the canvas column so
@@ -589,7 +621,3 @@ function PlayerChip({ player }: { player: PlayerState }): JSX.Element {
   );
 }
 
-// Silence unused import warning while phase variable is reserved for future
-// EffectPlayer wiring. (PHASE_T_PULL_PANTS is documented for engineers as
-// the canonical phase boundary the EffectPlayer will use.)
-void PHASE_T_PULL_PANTS;

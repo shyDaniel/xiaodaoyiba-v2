@@ -9,15 +9,23 @@
 // camera applies `cameraX * factor` per frame. Even with the camera idle
 // the foreground/background drift independently (clouds, leaves, lantern
 // sway), so depth reads instantly on first paint.
+//
+// Round choreography is owned by EffectPlayer.ts, not by this component.
+// The host exposes an imperative `controllerRef` so Game.tsx can call
+// `controller.play(effects, players, options)` on each round-resolve and
+// have the canvas dispatch RUSH / PULL / STRIKE / RETURN at the right
+// phase boundaries (FINAL_GOAL §A5 timing). React state never holds
+// per-frame animation — the contract that v1's renderer collapsed.
 
 import { Application, Container } from 'pixi.js';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type MutableRefObject } from 'react';
 import { Background } from './stage/Background.js';
 import { Mountains } from './stage/Mountains.js';
 import { Ground } from './stage/Ground.js';
 import { Foreground } from './stage/Foreground.js';
 import { House } from './stage/House.js';
 import { Character } from './characters/Character.js';
+import { EffectPlayer } from './EffectPlayer.js';
 
 export interface StagePlayer {
   id: string;
@@ -26,8 +34,23 @@ export interface StagePlayer {
   isSelf?: boolean;
 }
 
+/** Imperative handle exposed to React parents. The parent (Game.tsx) holds
+ *  this in a ref and calls `play()` on every round-resolve. */
+export interface StageController {
+  /** Forward an Effect[] timeline to the canvas EffectPlayer. */
+  play: EffectPlayer['play'];
+  /** Reset every character to homeX + IDLE between rounds (after applying
+   *  engine snapshot, before the user picks again). */
+  reset: EffectPlayer['reset'];
+  /** True while a play() is in flight — used by parent to gate user input. */
+  isActive: () => boolean;
+}
+
 export interface GameStageProps {
   players: StagePlayer[];
+  /** Imperative handle. Set when Pixi finishes initializing and cleared
+   *  on unmount. Game.tsx awaits a non-null value before using it. */
+  controllerRef?: MutableRefObject<StageController | null>;
   /** Optional callback fired once when the Pixi Application is ready. */
   onReady?: (app: Application) => void;
 }
@@ -44,11 +67,14 @@ interface SceneRefs {
   fgLayer: Container;
   houses: Map<string, House>;
   characters: Map<string, Character>;
+  /** Home x for each character — the spot the character idles at and
+   *  returns to between actions. Recomputed on every layoutPlayers(). */
+  homeX: Map<string, number>;
   resizeObserver: ResizeObserver;
-  raf: number | null;
+  effectPlayer: EffectPlayer;
 }
 
-export function GameStage({ players, onReady }: GameStageProps): JSX.Element {
+export function GameStage({ players, controllerRef, onReady }: GameStageProps): JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<SceneRefs | null>(null);
 
@@ -119,6 +145,15 @@ export function GameStage({ players, onReady }: GameStageProps): JSX.Element {
 
         const houses = new Map<string, House>();
         const characters = new Map<string, Character>();
+        const homeX = new Map<string, number>();
+
+        // EffectPlayer reads the live characters/homeX maps via these
+        // closures — so it always sees the current scene, even after
+        // reconcile cycles.
+        const effectPlayer = new EffectPlayer({
+          getCharacter: (id) => characters.get(id),
+          getHomeX: (id) => homeX.get(id),
+        });
 
         const refs: SceneRefs = {
           app,
@@ -132,6 +167,7 @@ export function GameStage({ players, onReady }: GameStageProps): JSX.Element {
           fgLayer,
           houses,
           characters,
+          homeX,
           resizeObserver: new ResizeObserver(() => {
             const ww = Math.max(1, host.clientWidth);
             const hh = Math.max(1, host.clientHeight);
@@ -142,7 +178,7 @@ export function GameStage({ players, onReady }: GameStageProps): JSX.Element {
             fg.resize(ww, hh);
             layoutPlayers(refs);
           }),
-          raf: null,
+          effectPlayer,
         };
         refs.resizeObserver.observe(host);
         sceneRef.current = refs;
@@ -172,6 +208,16 @@ export function GameStage({ players, onReady }: GameStageProps): JSX.Element {
         }
         layoutPlayers(refs);
 
+        // Wire the imperative controller once init finishes.
+        if (controllerRef) {
+          controllerRef.current = {
+            play: (effects, snap, options) =>
+              effectPlayer.play(effects, snap, options),
+            reset: (ids) => effectPlayer.reset(ids),
+            isActive: () => effectPlayer.isActive(),
+          };
+        }
+
         // Animation tick (Pixi shared ticker)
         let last = performance.now();
         const tick = (): void => {
@@ -194,7 +240,13 @@ export function GameStage({ players, onReady }: GameStageProps): JSX.Element {
     return () => {
       cancelled = true;
       const refs = sceneRef.current;
+      if (controllerRef) controllerRef.current = null;
       if (refs) {
+        try {
+          refs.effectPlayer.cancel();
+        } catch {
+          /* noop */
+        }
         try {
           refs.resizeObserver.disconnect();
         } catch {
@@ -246,9 +298,13 @@ export function GameStage({ players, onReady }: GameStageProps): JSX.Element {
         refs.gameplayLayer.addChild(ch.view);
         refs.characters.set(p.id, ch);
       }
+      // Reconcile persistent stage flags. Pants-down is sticky once true,
+      // so only flip it from clothed→down (never the reverse) — that
+      // matches engine semantics (a player can only become pants_down,
+      // they can't recover) and avoids the in-flight slide animation
+      // being clobbered by a stale snapshot mid-PULL.
       if (p.stage === 'ALIVE_PANTS_DOWN') ch.setPantsDown(true);
-      else if (p.stage === 'ALIVE_CLOTHED') ch.setPantsDown(false);
-      if (p.stage === 'DEAD') ch.setState('DEAD');
+      if (p.stage === 'DEAD' && ch.getState() !== 'DEAD') ch.setState('DEAD');
     }
     // Remove dropped players
     for (const id of Array.from(refs.characters.keys())) {
@@ -259,6 +315,7 @@ export function GameStage({ players, onReady }: GameStageProps): JSX.Element {
           refs.gameplayLayer.removeChild(ch.view);
           ch.view.destroy({ children: true });
           refs.characters.delete(id);
+          refs.homeX.delete(id);
         }
         if (h) {
           refs.gameplayLayer.removeChild(h.view);
@@ -282,7 +339,9 @@ export function GameStage({ players, onReady }: GameStageProps): JSX.Element {
   );
 }
 
-/** Position houses + characters per FINAL_GOAL §C9 layout rules. */
+/** Position houses + characters per FINAL_GOAL §C9 layout rules. Also
+ *  records each character's homeX so EffectPlayer can derive RUSH/RETURN
+ *  targets without re-querying React state. */
 function layoutPlayers(refs: SceneRefs): void {
   const w = refs.app.screen.width;
   const h = refs.app.screen.height;
@@ -308,13 +367,27 @@ function layoutPlayers(refs: SceneRefs): void {
       house.view.scale.set(spot.scale, spot.scale);
     }
     if (ch) {
-      ch.view.position.set(spot.charX, spot.charY);
+      // Snap home position only when the character is currently at a
+      // previously-stored home (or has no home yet) — otherwise we'd
+      // teleport an in-flight rush back to the new spot every time the
+      // viewport resizes mid-action.
+      const prevHome = refs.homeX.get(id);
+      const atHome = prevHome === undefined || Math.abs(ch.view.x - prevHome) < 1;
+      if (atHome) {
+        ch.view.position.set(spot.charX, spot.charY);
+      } else {
+        // Update y (so a viewport resize during a horizontal tween doesn't
+        // float the character) but preserve the in-flight x.
+        ch.view.y = spot.charY;
+      }
       const baseScale = spot.scale * 1.05;
       ch.facing = spot.facing;
       ch.view.scale.set(
         baseScale * (spot.facing === 1 ? 1 : -1),
         baseScale,
       );
+      ch.setHomeX(spot.charX);
+      refs.homeX.set(id, spot.charX);
     }
   }
 }

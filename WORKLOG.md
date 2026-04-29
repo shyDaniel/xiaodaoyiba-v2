@@ -445,3 +445,54 @@ animated rows, pants-down indicator, color-coded verb badges).
   iterations should add `.test.tsx` for HandPicker / BattleLog logic).
 - GitHub Actions CI.
 
+
+---
+
+## iter-13 (S-195) — recover iter-7 in-flight work: wire EffectPlayer into Game.tsx
+
+Iter-7 left a half-wired tree behind: `EffectPlayer.ts` (new file),
+`Character.ts` (RUSH/RETURN tween + topPants slide methods), and
+`GameStage.tsx` (controllerRef + scene refs) had been written but
+never invoked from React. Game.tsx still scheduled phase narration
+via `setTimeout` in component scope and the canvas was deaf to
+engine events — characters stood still through the whole "冲到对方
+家里" choreography. This is the v1 entanglement v2 was meant to
+delete; the iter-7 worker stopped one wire short of the cut.
+
+This iteration finishes the wire:
+
+- `Game.tsx` holds a `stageRef: MutableRefObject<StageController>`
+  and passes it to `<GameStage controllerRef={stageRef} />`.
+- `submitChoice` no longer schedules per-narration `setTimeout`s.
+  It calls `stageRef.current.play(result.effects, playerStates,
+  { onNarration })` and awaits the returned promise — the canvas
+  EffectPlayer dispatches PREP/RUSH/PULL/STRIKE/RETURN at the
+  canonical timing.ts offsets, and `onNarration` appends BattleLog
+  rows in lockstep with the on-stage beat.
+- After each round, `stageRef.current.reset(...)` snaps survivors
+  back to homeX + IDLE so the next round starts from a clean pose
+  without clobbering DEAD/PANTS_DOWN persistence.
+- Tie path uses the same `play()` call (EffectPlayer holds for
+  TIE_NARRATION_HOLD_MS internally). Defensive fallback (Pixi not
+  yet ready) emits log rows + sleeps so phase still advances.
+- Removed the `void PHASE_T_PULL_PANTS` placeholder that had
+  marked the unfinished hook.
+
+`pnpm -r build` green (shared tsc, server tsup, client vite — 449 KB
+JS / 143 KB gzip with PixiJS). `pnpm test` green (62 shared tests).
+
+**Observed in dev**: round flow now completes end-to-end through
+the canvas: actor sprites RUSH across the stage with ease-out lean,
+victim's `topPants` y-slides waist→ankle revealing red briefs over
+PHASE_T_PULL_PANTS (900 ms), `setPantsDown(true)` locks in so the
+briefs persist across subsequent rounds, RETURN tween eases the
+attacker home over PHASE_T_RETURN (800 ms), and BattleLog rows land
+at atMs=900 (扒) and atMs=1800 (砍). No more frozen sprites mid-
+narration.
+
+**Not in this iteration (still outstanding from verdict):**
+- Headless sim CLI in `packages/server/src/sim.ts` (still a stub).
+- Bot registry + seeded RNG in `packages/shared/src/game/bots/`.
+- Particle systems / camera / screen shake / audio.
+- Socket.IO Room + Landing/Lobby pages.
+- GitHub Actions CI.

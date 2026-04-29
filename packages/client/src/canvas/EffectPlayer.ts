@@ -1,0 +1,293 @@
+// EffectPlayer — the canvas-side consumer of the engine's Effect[] timeline.
+//
+// What this is
+// ------------
+// The pure `resolveRound()` engine emits a flat ordered list of `Effect`
+// objects with `atMs` offsets relative to the round's t=0. Three consumers
+// read the same list:
+//
+//   1. Headless sim CLI — ignores time, just inspects events.
+//   2. Socket.IO server — relays the list to clients verbatim.
+//   3. The browser EffectPlayer (this file) — reads `atMs` / `durationMs`
+//      and schedules canvas state transitions (character.moveTo,
+//      character.setState, character.slideTopPantsDown) at the right
+//      offsets so the title verb 冲 (rush) reads as actual on-stage motion
+//      and the 扒裤衩 reveal animates pants waist→ankle.
+//
+// Before this file existed, Game.tsx scheduled state via setTimeout chains
+// that mutated React state — so PHASE_START never reached the canvas, the
+// BattleLog narrated "一个箭步上前" while the sprite stood still, and the
+// title verb had zero visible motion. EffectPlayer is the bridge: React
+// owns no per-frame state, the engine emits the timeline, and the canvas
+// dispatches it.
+
+import type {
+  Effect,
+  PlayerId,
+  PlayerState,
+} from '@xdyb/shared';
+import {
+  ACTION_TOTAL_MS,
+  PHASE_T_PULL_PANTS,
+  PHASE_T_RETURN,
+  PHASE_T_RUSH,
+  TIE_NARRATION_HOLD_MS,
+} from '@xdyb/shared';
+import type { Character } from './characters/Character.js';
+
+/** Lookup contract the player needs from its host (GameStage). The host
+ *  owns the Pixi scene graph; EffectPlayer is stateless w.r.t. positions
+ *  and queries the host on every dispatch. */
+export interface EffectPlayerScene {
+  /** Get the live Character instance for a player id, or undefined if it
+   *  was reconciled away mid-round (defensive — should not happen). */
+  getCharacter(id: PlayerId): Character | undefined;
+  /** World x of the character's home spot — where they idle and return to.
+   *  Read once at action start so a mid-action layout reflow does not
+   *  desync the RETURN tween. */
+  getHomeX(id: PlayerId): number | undefined;
+}
+
+export interface PlayEffectsOptions {
+  /** Fired with the latest narration text, optionally tagged with a
+   *  per-effect `atMs` so the host can append a BattleLog row at the
+   *  same beat the canvas plays. The actor/target id pair is included
+   *  so the host can color-code the row. */
+  onNarration?: (entry: {
+    atMs: number;
+    text: string;
+    verb: '扒' | '砍' | '闪' | '平' | '死';
+    actor?: PlayerId;
+    target?: PlayerId;
+  }) => void;
+}
+
+/** Schedule a callback at `targetMs` from the timeline anchor `t0`,
+ *  using window.setTimeout. Returns the timer id so cancel() can clear
+ *  pending dispatches when a new round comes in. */
+function scheduleAt(
+  timers: number[],
+  t0: number,
+  atMs: number,
+  fn: () => void,
+): void {
+  const delay = Math.max(0, t0 + atMs - performance.now());
+  const id = window.setTimeout(fn, delay);
+  timers.push(id);
+}
+
+/**
+ * EffectPlayer is owned by the GameStage host (one per stage, lifetime
+ * tied to the Pixi Application). React's Game page calls `play(effects,
+ * players, options)` on every round-resolve and awaits the returned
+ * promise.
+ *
+ * The player is single-shot: a second `play()` call cancels any pending
+ * timers from the prior round (defensive — under normal flow the host
+ * awaits the previous play() before issuing a new one).
+ */
+export class EffectPlayer {
+  private timers: number[] = [];
+  private active = false;
+
+  constructor(private readonly scene: EffectPlayerScene) {}
+
+  /** Reset the action choreography to neutral: each character at its
+   *  homeX, IDLE state. Called between rounds so the next round starts
+   *  from a known pose. */
+  reset(playerIds: ReadonlyArray<PlayerId>): void {
+    for (const id of playerIds) {
+      const ch = this.scene.getCharacter(id);
+      const homeX = this.scene.getHomeX(id);
+      if (!ch) continue;
+      // Don't disturb DEAD pose (rotation/alpha).
+      if (ch.getState() === 'DEAD') continue;
+      ch.setState('IDLE');
+      if (homeX !== undefined) {
+        // Snap home rather than tween — the next round's RUSH should
+        // start from a clean baseline.
+        ch.view.x = homeX;
+      }
+    }
+  }
+
+  /** Cancel pending dispatches. Idempotent. */
+  cancel(): void {
+    for (const id of this.timers) window.clearTimeout(id);
+    this.timers = [];
+    this.active = false;
+  }
+
+  /** Returns true while a play() is in flight. */
+  isActive(): boolean {
+    return this.active;
+  }
+
+  /**
+   * Play one round's Effect[] choreography on the canvas.
+   *
+   * Timeline (action round, t in ms from t0):
+   *   0    PHASE_START PREP                     → actor: PREP
+   *   300  PHASE_START RUSH                     → actor: RUSH + moveTo(victim.spotX, RUSH=600ms)
+   *   900  PHASE_START PULL_PANTS  + ACTION     → actor: PULL; victim: SHAME + slideTopPantsDown(900ms)
+   *   1300 SET_STAGE (engine ALIVE_PANTS_DOWN)  → victim.setPantsDown(true) (locks the briefs in)
+   *   1800 PHASE_START STRIKE                   → actor: STRIKE (chops on PULL_PANTS targets too,
+   *                                                conceptually a pose hold; for CHOP rounds the
+   *                                                blade actually connects here and SET_STAGE→DEAD)
+   *   2400 PHASE_START IMPACT                   → (camera shake / particle burst hooks; future)
+   *   3200 PHASE_START RETURN                   → actor: IDLE + moveTo(homeX, RETURN=800ms, 'in-out')
+   *   4000 ACTION_TOTAL_MS                      → resolve()
+   *
+   * Tie round: TIE_NARRATION fires once at atMs=0; resolve() fires after
+   * TIE_NARRATION_HOLD_MS (2000ms).
+   */
+  async play(
+    effects: ReadonlyArray<Effect>,
+    players: ReadonlyArray<PlayerState>,
+    options: PlayEffectsOptions = {},
+  ): Promise<void> {
+    this.cancel();
+    this.active = true;
+    const t0 = performance.now();
+
+    // Helper: nickname lookup by id (used by narration emitter).
+    const nicknameById = new Map<PlayerId, string>();
+    for (const p of players) nicknameById.set(p.id, p.nickname);
+
+    // ── Tie path ────────────────────────────────────────────────────────
+    const tie = effects.find((e) => e.type === 'TIE_NARRATION');
+    if (tie && tie.type === 'TIE_NARRATION') {
+      // No character motion on a tie — just emit the narration row, sit
+      // for the canonical hold, then resolve.
+      if (options.onNarration) {
+        options.onNarration({
+          atMs: 0,
+          text: tie.text,
+          verb: '平',
+        });
+      }
+      await waitMs(TIE_NARRATION_HOLD_MS);
+      this.active = false;
+      return;
+    }
+
+    // ── Action path ─────────────────────────────────────────────────────
+    // Pull out actions + narrations. ACTION effects fire at PULL_PANTS
+    // start (atMs=900); narrations are emitted at the same beat for
+    // PULL_PANTS rounds and at STRIKE start (atMs=1800) for CHOP rounds.
+    const actions = effects.filter(
+      (e): e is Extract<Effect, { type: 'ACTION' }> => e.type === 'ACTION',
+    );
+    const narrations = effects.filter(
+      (e): e is Extract<Effect, { type: 'NARRATION' }> => e.type === 'NARRATION',
+    );
+
+    // Schedule narration → host (e.g. BattleLog row append). One row per
+    // narration effect; emit at its declared atMs so the on-stage beat
+    // and the log row land in lockstep.
+    for (const nar of narrations) {
+      scheduleAt(this.timers, t0, nar.atMs, () => {
+        if (options.onNarration) {
+          options.onNarration({
+            atMs: nar.atMs,
+            text: nar.text,
+            verb: nar.verb,
+            actor: nar.actor,
+            target: nar.target,
+          });
+        }
+      });
+    }
+
+    // Schedule per-pairing character motion. The 5-phase timeline is the
+    // canonical FINAL_GOAL §A5 timing — durations imported from
+    // timing.ts. atMs offsets here mirror PHASE_OFFSETS (PREP=0, RUSH=300,
+    // PULL_PANTS=900, STRIKE=1800, IMPACT=2400, RETURN=3200) but we use
+    // the ACTION effect's own atMs (=PULL_PANTS=900) as the engine's
+    // canonical anchor, then derive RUSH start as (atMs - PHASE_T_RUSH)
+    // and RETURN start as (atMs + PHASE_T_PULL_PANTS + PHASE_T_STRIKE +
+    // PHASE_T_IMPACT). This way a future change to timing.ts ripples
+    // through here with no further edits.
+    for (const action of actions) {
+      const actor = this.scene.getCharacter(action.actor);
+      const victim = this.scene.getCharacter(action.target);
+      if (!actor || !victim) continue;
+
+      const actorHomeX = this.scene.getHomeX(action.actor) ?? actor.view.x;
+      const victimX = this.scene.getHomeX(action.target) ?? victim.view.x;
+
+      // Stand a hair offset from the victim's spot so the actor doesn't
+      // overlap the victim sprite. Sign chosen so the actor approaches
+      // from the side they came from.
+      const approach = actorHomeX <= victimX ? -52 : 52;
+      const rushTargetX = victimX + approach;
+
+      const atPullPants = action.atMs;            // 900
+      const atRushStart = atPullPants - PHASE_T_RUSH; // 300
+      const atStrike = atPullPants + PHASE_T_PULL_PANTS; // 1800
+      const atReturn = atStrike + 600 + 800;       // 3200 (STRIKE+IMPACT)
+
+      // PREP: anticipation crouch (atMs=0). Holds for PHASE_T_PREP=300.
+      scheduleAt(this.timers, t0, 0, () => {
+        actor.setState('PREP');
+      });
+
+      // RUSH: lean + sprint to victim. The title verb 冲.
+      scheduleAt(this.timers, t0, atRushStart, () => {
+        actor.setState('RUSH');
+        // ease-out for punchy decel into the victim
+        void actor.moveTo(rushTargetX, PHASE_T_RUSH, 'out');
+      });
+
+      // PULL_PANTS: actor grabs (PULL pose); victim cringes (SHAME pose)
+      // and the top-pants slide kicks off. The slide takes the full
+      // PHASE_T_PULL_PANTS=900ms (waist→ankle).
+      scheduleAt(this.timers, t0, atPullPants, () => {
+        if (action.kind === 'PULL_PANTS') {
+          actor.setState('PULL');
+          victim.setState('SHAME');
+          victim.slideTopPantsDown(PHASE_T_PULL_PANTS);
+        } else if (action.kind === 'CHOP') {
+          // CHOP: actor stays in PULL pose briefly (still grabbing the
+          // pants-down victim) before STRIKE; victim already shows SHAME
+          // because pantsDown persists from prior round.
+          actor.setState('PULL');
+          victim.setState('SHAME');
+        }
+      });
+
+      // STRIKE: actor swings the knife. For PULL_PANTS rounds this is
+      // the wind-up flourish over the just-revealed briefs; for CHOP
+      // rounds the blade connects (engine's SET_STAGE→DEAD already
+      // fires at this offset in the effect list, which we ignore on
+      // canvas — we use it only via the post-action snapshot).
+      scheduleAt(this.timers, t0, atStrike, () => {
+        actor.setState('STRIKE');
+      });
+
+      // RETURN: walk back to home spot in IDLE. Uses ease-in-out so the
+      // actor doesn't overshoot the home spot.
+      scheduleAt(this.timers, t0, atReturn, () => {
+        actor.setState('IDLE');
+        void actor.moveTo(actorHomeX, PHASE_T_RETURN, 'in-out');
+      });
+
+      // After the slide completes, lock pants-down so the briefs
+      // persist across rounds (FINAL_GOAL §C7). This complements the
+      // post-action snapshot reconcile in GameStage.
+      if (action.kind === 'PULL_PANTS') {
+        scheduleAt(this.timers, t0, atPullPants + PHASE_T_PULL_PANTS, () => {
+          victim.setPantsDown(true);
+        });
+      }
+    }
+
+    await waitMs(ACTION_TOTAL_MS);
+    this.active = false;
+  }
+}
+
+/** Resolve after `ms` milliseconds via setTimeout. */
+function waitMs(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
