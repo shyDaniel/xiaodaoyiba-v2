@@ -1,0 +1,23 @@
+{
+  "name": "xiaodaoyiba-v2",
+  "version": "0.0.1",
+  "private": true,
+  "license": "MIT",
+  "description": "小刀一把 (xiaodaoyiba) v2 — multiplayer RPS game with PixiJS canvas renderer and headless sim mode",
+  "packageManager": "pnpm@9.15.9",
+  "scripts": {
+    "dev": "pnpm -r --parallel --stream dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r exec tsc --noEmit",
+    "lint": "pnpm -r lint",
+    "sim": "pnpm --filter @xdyb/server sim"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  }
+}
