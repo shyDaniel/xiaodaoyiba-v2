@@ -54,13 +54,14 @@ interface ParsedArgs {
   format: 'human' | 'jsonl';
   quiet: boolean;
   help: boolean;
+  strict: boolean;
 }
 
 const HELP = `xdyb-sim — headless game simulator (shared@${SHARED_PACKAGE_VERSION})
 
 Usage:
   pnpm sim [--players N] [--bots LIST] [--rounds R] [--seed S]
-           [--format human|jsonl] [--quiet]
+           [--format human|jsonl] [--quiet] [--strict|--no-strict]
 
 Flags:
   --players  Players in the room (default 4). Player 0 is human-shaped
@@ -72,6 +73,8 @@ Flags:
   --seed     Integer seed for reproducibility (default: time-based).
   --format   'human' (default, key=val) or 'jsonl' (one JSON per line).
   --quiet    Suppress per-round output; print only the final summary.
+  --strict   Exit non-zero on §A2 budget violations (default: true when
+             --rounds >= 20, false otherwise). Use --no-strict to suppress.
   -h, --help Show this help and exit.
 
 Examples:
@@ -80,6 +83,10 @@ Examples:
 `;
 
 function parseArgs(argv: readonly string[]): ParsedArgs {
+  // strictExplicit tracks whether the caller passed --strict or --no-strict;
+  // if not, the default flips to `true` for runs of >= 20 rounds (the §A2
+  // budget threshold) and stays `false` for shorter exploratory runs.
+  let strictExplicit = false;
   const out: ParsedArgs = {
     players: 4,
     bots: ['counter', 'random', 'iron', 'mirror'],
@@ -88,6 +95,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     format: 'human',
     quiet: false,
     help: false,
+    strict: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
@@ -152,9 +160,23 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       case '--quiet':
         out.quiet = true;
         break;
+      case '--strict':
+        out.strict = true;
+        strictExplicit = true;
+        break;
+      case '--no-strict':
+        out.strict = false;
+        strictExplicit = true;
+        break;
       default:
         throw new Error(`unknown flag: ${a} (try --help)`);
     }
+  }
+  if (!strictExplicit) {
+    // Default policy: for the canonical §A2 acceptance gate (50-round runs),
+    // any tie-rate or per-bot win-share violation must fail CI. For shorter
+    // exploratory runs (< 20 rounds) the budget-warn output is enough.
+    out.strict = out.rounds >= 20;
   }
   return out;
 }
@@ -394,7 +416,15 @@ function emitRound(r: RoundReport, format: ParsedArgs['format']): void {
   );
 }
 
-function emitSummary(stats: SummaryStats, args: ParsedArgs): void {
+/** §A2 budget violations surfaced by emitSummary; consumed by main() for exit-code policy. */
+export interface BudgetViolations {
+  tieRateBreach: boolean;
+  topBotBreach: boolean;
+  /** Human-readable lines, exact text written to stderr. */
+  messages: string[];
+}
+
+function emitSummary(stats: SummaryStats, args: ParsedArgs): BudgetViolations {
   const lastWinner = stats.winners[stats.winners.length - 1] ?? '-';
   const tieRate = stats.rounds > 0 ? stats.ties / stats.rounds : 0;
   const winsKv = Object.entries(stats.winsByPlayer)
@@ -415,23 +445,36 @@ function emitSummary(stats: SummaryStats, args: ParsedArgs): void {
       `duration_ms=${stats.durationMs}\n`,
   );
 
+  const violations: BudgetViolations = {
+    tieRateBreach: false,
+    topBotBreach: false,
+    messages: [],
+  };
+
   if (stats.rounds >= 20) {
     if (tieRate >= 0.30) {
-      process.stderr.write(
-        `[sim] warn: tie_rate=${tieRate.toFixed(3)} >= 0.30 (FINAL_GOAL §A2 budget)\n`,
-      );
+      violations.tieRateBreach = true;
+      const msg = `[sim] warn: tie_rate=${tieRate.toFixed(3)} >= 0.30 (FINAL_GOAL §A2 budget)`;
+      violations.messages.push(msg);
+      process.stderr.write(msg + '\n');
     }
+    // Per-bot win share only meaningful with enough samples; 1/1 or 2/2
+    // is statistical noise from short CI smokes, not a true §A2 breach.
+    // The canonical acceptance gate runs 50 rounds (typically 5-10 games),
+    // so 5 games minimum is a reasonable floor.
     const totalWins = stats.winners.length;
-    if (totalWins >= 2) {
+    if (totalWins >= 5) {
       for (const [id, n] of Object.entries(stats.winsByPlayer)) {
         if (n / totalWins > 0.60) {
-          process.stderr.write(
-            `[sim] warn: ${id} wins ${n}/${totalWins} (>60%; FINAL_GOAL §A2 budget)\n`,
-          );
+          violations.topBotBreach = true;
+          const msg = `[sim] warn: ${id} wins ${n}/${totalWins} (>60%; FINAL_GOAL §A2 budget)`;
+          violations.messages.push(msg);
+          process.stderr.write(msg + '\n');
         }
       }
     }
   }
+  return violations;
 }
 
 function listStrategies(): string {
@@ -459,7 +502,15 @@ export function main(argv: readonly string[]): number {
   }
 
   const { stats } = runSim(args);
-  emitSummary(stats, args);
+  const violations = emitSummary(stats, args);
+
+  if (args.strict && (violations.tieRateBreach || violations.topBotBreach)) {
+    process.stderr.write(
+      `[sim] FAIL: §A2 budget breach (--strict). ` +
+        `Pass --no-strict to convert this exit-1 into a warning.\n`,
+    );
+    return 1;
+  }
   return 0;
 }
 

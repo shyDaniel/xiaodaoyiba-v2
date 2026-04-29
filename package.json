@@ -12,6 +12,7 @@
     "typecheck": "pnpm -r exec tsc --noEmit",
     "lint": "pnpm -r lint",
     "sim": "pnpm --filter @xdyb/server sim",
+    "smoke": "node scripts/smoke-headless.mjs",
     "trust:mcp": "node scripts/trust-mcp.mjs"
   },
   "devDependencies": {
