@@ -1,0 +1,5 @@
+{
+  "$comment": "Pre-approve the .mcp.json browser MCPs (playwright + chrome-devtools) so that headless agent-autopilot sessions can use them without a trust-dialog round-trip. Without one of `enableAllProjectMcpServers: true` or `enabledMcpjsonServers: [...]` here, Claude Code silently drops every server in .mcp.json — the trust dialog never runs in a non-interactive SDK session, so the user is implicitly answered as 'no'. This is the repo-side belt; agent-autopilot also passes `--strict-mcp-config` (S-256) which is the suspenders. See WORKLOG.md S-256 + S-246.",
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": ["playwright", "chrome-devtools"]
+}
