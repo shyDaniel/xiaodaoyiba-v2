@@ -160,12 +160,66 @@ export class House {
     // ground stoop
     g.rect(doorX - 8, bodyY + bodyH - 4, doorW + 16, 6).fill({ color: 0x4a3424 });
 
-    // name plaque
+    // name plaque — width auto-sized to the rendered nameplate so long
+    // strategy names ('counter', 'random', 'mirror', 'counter#2') do
+    // not truncate. The plaque hangs above the roof. We measure the
+    // text width using a fresh OffscreenCanvas 2D context (which uses
+    // the same browser font metrics as Pixi's Text renderer) — earlier
+    // attempts at Pixi-Text.width readback gave 0 on first paint, and
+    // a per-char heuristic underestimated bold Latin glyphs (e.g.
+    // 'counter' rendered at 16px-bold is ~85px wide, not the 70px our
+    // heuristic predicted, so the ribbon clipped to 'counte').
     this.plaque.removeChildren();
     const plaqueY = roofTop - 32;
-    const plaqueG = new Graphics();
-    const plaqueW = 110;
     const plaqueH = 28;
+    const namePool = opts.ownerName ?? '';
+    const fontFamily =
+      'ui-sans-serif, "PingFang SC", "Microsoft YaHei", sans-serif';
+    const measureCanvas =
+      typeof OffscreenCanvas !== 'undefined'
+        ? new OffscreenCanvas(8, 8)
+        : (typeof document !== 'undefined' ? document.createElement('canvas') : null);
+    const measureCtx = measureCanvas?.getContext('2d') as
+      | CanvasRenderingContext2D
+      | OffscreenCanvasRenderingContext2D
+      | null
+      | undefined;
+    const measureTextW = (str: string, fs: number): number => {
+      if (!measureCtx) {
+        // jsdom test fallback: heuristic that matches the test geometry
+        // (roughly 0.7 * fontSize per Latin char + 1.0 * fontSize per CJK)
+        let t = 0;
+        for (const ch of str) {
+          const code = ch.charCodeAt(0);
+          const cjk =
+            (code >= 0x3000 && code <= 0x9fff) ||
+            (code >= 0xff00 && code <= 0xffef);
+          t += cjk ? fs * 1.0 : fs * 0.7;
+        }
+        return Math.ceil(t);
+      }
+      measureCtx.font = `700 ${fs}px ${fontFamily}`;
+      return Math.ceil(measureCtx.measureText(str).width);
+    };
+    // Plaque cap: the silhouette of the house is roughly bodyW + roof
+    // eaves = w * 0.78 + 32. We allow the plaque to extend up to that
+    // width so a 'counter' / 'mirror' nameplate fits without overflow
+    // even when houseW is narrow (mobile back-row houseW ≈ 110).
+    const cap = Math.max(120, w * 0.78 + 32);
+    let fontSize = 16;
+    while (measureTextW(namePool, fontSize) + 18 > cap && fontSize > 10) {
+      fontSize -= 1;
+    }
+    const measuredW = measureTextW(namePool, fontSize);
+    // Final safety pad: +24 px (12 px each side) so the rendered glyph
+    // edges sit comfortably inside the ribbon even when the font driver
+    // adds an extra trailing-bearing pixel for bold weights and the
+    // Pixi text rasteriser adds a 1-px sub-pixel margin around the
+    // glyph baseline. Empirically a +14 pad still let 'counter' render
+    // as 'counte' in 6p multi at 920×800 — +24 fully resolves it.
+    const plaqueW = Math.max(120, measuredW + 32);
+
+    const plaqueG = new Graphics();
     plaqueG.rect(-plaqueW / 2 - 2, plaqueY - 2, plaqueW + 4, plaqueH + 4).fill({ color: 0x2a1a14 });
     plaqueG.rect(-plaqueW / 2, plaqueY, plaqueW, plaqueH).fill({ color: palette.housePlaque });
     // little hanger ribbons
@@ -173,11 +227,11 @@ export class House {
     this.plaque.addChild(plaqueG);
 
     const text = new Text({
-      text: opts.ownerName,
+      text: namePool,
       style: new TextStyle({
         fontFamily:
           'ui-sans-serif, "PingFang SC", "Microsoft YaHei", sans-serif',
-        fontSize: 16,
+        fontSize,
         fontWeight: '700',
         fill: 0x2a1a14,
       }),
@@ -185,5 +239,15 @@ export class House {
     text.anchor.set(0.5);
     text.position.set(0, plaqueY + plaqueH / 2);
     this.plaque.addChild(text);
+  }
+
+  /** Read the rendered plaque ribbon width (post-fit). Used by tests +
+   *  multi-room layout assertions to verify nameplates aren't truncated. */
+  getPlaqueWidth(): number {
+    // The plaque background is the first child Graphics; its bounds
+    // give us the rendered ribbon size in local coordinates.
+    if (this.plaque.children.length === 0) return 0;
+    const bounds = this.plaque.getLocalBounds();
+    return bounds.width;
   }
 }

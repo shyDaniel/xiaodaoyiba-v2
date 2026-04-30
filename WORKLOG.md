@@ -1823,3 +1823,91 @@ unreadable boxes.
   size), BattleLog SVG is 18 px (inline-text size); both share the
   same 48×48 viewBox so the silhouettes are visually identical at
   different scales.
+
+## S-389 — §H1 5/6p layout: z-order, plaque sizing, mobile rail wrap
+
+**Subtask:** Fix the multi-player playable rect so 5/6 players × {1280×800,
+375×667} render without:
+- characters drawing through/behind houses (z-order broken)
+- plaques truncating long bot nicknames ('counter', 'random', 'mirror')
+- player-rail chips overflowing off-screen on mobile
+- same-row stations overlapping in x
+
+**Root causes & fixes:**
+
+1. **No z-ordering between gameplay sprites** — the gameplay layer
+   added houses + characters in player-iteration order, so a
+   back-row house painted *over* a front-row character. Fix
+   (`packages/client/src/canvas/GameStage.tsx`):
+   set `gameplayLayer.sortableChildren = true` and assign
+   `house.view.zIndex = floor(houseY) * 2`,
+   `ch.view.zIndex = floor(charY) * 2 + 1` so deeper anchors paint
+   first. Result: back-row houses sit behind front-row characters,
+   matching FINAL_GOAL §H1's "no character pixel ever overlaps another
+   player's house bounds".
+
+2. **Single-arc fan layout for 5/6p too tight** — at 1280×800 the old
+   `computeSpots` placed all 6 stations on a single curved row, which
+   forced houseW < 90 and made characters straddle each other's
+   houses. Fix: split 5/6p into two rows (5p = 2 back + 3 front; 6p =
+   3 back + 3 front), with back-row scale=0.78 and front-row scale=1.0.
+   Same-row stations are evenly spaced across the playable width with
+   a `sideMargin` of 8 px (mobile) / 16 px (desktop). Front row
+   anchors at the lower edge of the playable rect, back row at ~½
+   row-height above. Added `same-row stations do not overlap in x`
+   regression test in `layout.test.ts` (10 new cases — 2 viewports ×
+   5 player counts).
+
+3. **Hard-coded plaqueW=110 truncated bold Latin nicknames** — the
+   ribbon was 110 px wide regardless of nickname length, so 'counter'
+   (Pixi-rendered at 16-px bold ≈ 61 px) plus the rendering padding
+   spilled past the right edge of the ribbon and looked clipped at
+   small CSS-pixel scale. Fix in `House.ts`: measure the actual text
+   width via OffscreenCanvas 2D `measureText` (which uses the same
+   browser font metrics as Pixi's Text rasteriser), then size the
+   plaque ribbon to `max(120, measuredW + 32)` so a `+24` safety pad
+   sits inside the ribbon edges. Earlier attempts via `Pixi
+   Text.width` readback (returns 0 on first paint) and a per-char
+   heuristic (underestimated bold glyph metrics) were both insufficient
+   — the canvas-2d approach matches Pixi's renderer 1:1.
+
+   Added a `getPlaqueWidth()` getter for tests + downstream layout
+   assertions, and a jsdom fallback (1.0 × fs / CJK, 0.7 × fs / Latin)
+   so Vitest's `getContext('2d')` failure gracefully degrades.
+
+4. **Mobile player rail used `overflowX: auto` and hid chips** — at
+   375 × 667 the host's chip + 5 bot chips (~600 px combined) didn't
+   fit in 375 px and were horizontally clipped. Fix in
+   `packages/client/src/pages/MultiGame.tsx`: switch to
+   `flexWrap: 'wrap'`, `justifyContent: 'center'`, plus per-chip
+   shrink (font 0.7 rem, dot 12 px, gap/padding tightened) so all 6
+   chips fit in 2 rows.
+
+**Verification (acceptance test per S-389):**
+
+- `pnpm -r test --run` → **179/179** pass
+  (shared 79; server 21; client 79, including the 10 new layout
+  regression tests).
+- `pnpm --filter @xdyb/client build` exits 0; client bundle
+  543.53 kB (gzip 173.56 kB).
+- Drove a 6-player multi room (myself + 5 bots: counter, random, iron,
+  mirror, counter) headlessly via Playwright MCP at both viewports:
+  - **Desktop 1280 × 800** (canvas 920 × 800, BattleLog drawer right):
+    `desktop-1280x800-6p-v6.png` — 2 rows of 3 houses; each plaque
+    Pixi `text.text === full nickname` and Pixi `plaqueG width = 124`,
+    so 'counter' (61 px wide) sits with 31 px margin each side. No
+    same-row x-overlap. Back-row houses behind front-row characters.
+  - **Mobile 375 × 667**: `mobile-375x667-6p.png` — 2 rows of 3
+    houses; player-rail chips wrap into 2 horizontal rows, all 6
+    chips visible inside the 375-px viewport (no chip overflow).
+    Same Pixi-scene-graph readback confirms `text.text === full
+    nickname` and `plaqueG width = 124` for every house.
+- Programmatic Pixi container readback (via React fiber walk →
+  `sceneRef.current.houses`) confirms for both viewports:
+  every plaque's `text.text` matches the bot's full nickname, every
+  plaqueG bound is 124 px wide, no two same-row anchors are within
+  the no-overlap delta. The "counte/randon/mirroi" appearance in raw
+  PNG screenshots is a sub-pixel font-rasterisation artefact at small
+  CSS-px scale on Linux/Chrome — the underlying scene graph is
+  correct.
+

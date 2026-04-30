@@ -502,6 +502,13 @@ function layoutPlayers(refs: SceneRefs): void {
   // For 2: side-by-side. For 3: 2 back + 1 front. For 4: 4 back. For 5/6: fan.
   const spots = computeSpots(n, w, playableTop, playableBottom);
 
+  // §H1 z-order: deeper-into-scene houses paint first. We assign zIndex
+  // by y-anchor (higher y = closer to camera). Houses get an even
+  // zIndex; characters get the odd zIndex one above their own house —
+  // so a back-row house (small y) paints behind a front-row character
+  // (big y) regardless of insertion order.
+  refs.gameplayLayer.sortableChildren = true;
+
   for (let i = 0; i < n; i++) {
     const id = ids[i];
     if (id == null) continue;
@@ -516,6 +523,7 @@ function layoutPlayers(refs: SceneRefs): void {
       house.resize(spot.houseW, spot.houseH);
       house.view.position.set(spot.houseX, spot.houseY);
       house.view.scale.set(spot.scale, spot.scale);
+      house.view.zIndex = Math.floor(spot.houseY) * 2;
     }
     if (ch) {
       // Snap home position only when the character is currently at a
@@ -539,6 +547,9 @@ function layoutPlayers(refs: SceneRefs): void {
       );
       ch.setHomeX(spot.charX);
       refs.homeX.set(id, spot.charX);
+      // §H1 z-order: character sits one notch above its own house's
+      // depth band so it paints in front of any house at smaller y.
+      ch.view.zIndex = Math.floor(spot.charY) * 2 + 1;
     }
   }
 }
@@ -764,43 +775,69 @@ export function computeSpots(
     return spots;
   }
 
-  // 5–6 players: fan / semicircle. We arrange stations on an arc that
-  // stays inside the playable rect: center the arc on (w/2, bottom)
-  // and clamp the radius so the lowest stations land at frontRowY and
-  // the leftmost / rightmost houses do not slide off the canvas edges.
-  const cx = w * 0.5;
-  const cy = bottom + 8;
-  // Arc radius: the bottommost station should sit at frontRowY, the
-  // topmost should not exceed top + 24. Pick a radius that fits both.
-  const maxRy = (frontRowY - top - 24) / 0.55; // since y = cy + sin(a)*r*0.55, sin~-1
-  const radiusY = Math.min(maxRy, playableH * 1.6);
-  // Horizontal radius is bounded so the outermost station's *visible*
-  // edge — center ± half_house_width_at_back_scale — stays inside the
-  // canvas. half_visible ≈ baseHouseW * 0.78/2 * 0.72*maxScale + 16.
-  const backScale = 0.72 * maxScale;
-  const halfHouseAtBack = (baseHouseW * 0.78) / 2 + 16;
-  const xMargin = 6 + halfHouseAtBack * backScale;
-  const radiusX = Math.min(w * 0.42, radiusY * 0.95, w / 2 - xMargin);
+  // 5–6 players: split into TWO rows so adjacent station bounding
+  // boxes don't overlap. With a single arc the 6p case packs stations
+  // ~w/6 apart along the bottom edge — at 1280×800 that's ~213 px per
+  // slot, smaller than a baseHouseW * 0.78 = 156 px sprite plus its
+  // plaque (cap = w * 1.0). Splitting reserves wider per-station x
+  // budget per row.
+  //
+  // 5p: 2 back + 3 front
+  // 6p: 3 back + 3 front
+  const backCount = n === 5 ? 2 : 3;
+  const frontCount = n - backCount;
+  const backSc = Math.min(0.78, maxScale * 0.78);
+  const frontSc = Math.min(1.0, maxScale);
+  const backRowY = houseRowY - 18;
+  const frontPlateY = lerp(horizon, frontRowY, 0.5);
+  const frontHouseY = Math.max(
+    backRowY + 70,
+    Math.min(houseRowY + 60, frontRowY - 24),
+  );
 
-  for (let i = 0; i < n; i++) {
-    const a = lerp(Math.PI + 0.25, -0.25, i / (n - 1));
-    const x = cx + Math.cos(a) * radiusX;
-    const yRaw = cy + Math.sin(a) * radiusY * 0.55;
-    // Distance-from-camera shading: front (lower) bigger, back (higher)
-    // smaller. Map y∈[top, frontRowY] → scale∈[0.7*max, 1.0*max].
-    const t = Math.max(0, Math.min(1, (yRaw - top) / (frontRowY - top)));
-    const sc = Math.min(maxScale, lerp(0.72, 1.0, t) * maxScale);
-    const charY = Math.min(frontRowY, Math.max(top + 24, yRaw));
-    const houseY = Math.max(top + 16, charY - 130 * sc);
+  // Per-row width budget. The plaque widens with houseW (cap = houseW
+  // * 1.0), so to keep adjacent plaques non-overlapping we want
+  // perStationW ≥ houseW * 1.0 + 8 (an 8 px gutter). At 1280×800 with
+  // 3 stations per row, perStationW = (1280 - 32) / 3 = 416, so
+  // houseW ≤ ~408 — fitHouseW will cap to baseHouseW (200), well
+  // within budget. At 375×667 with 3 per row, perStationW ≈ (375 -
+  // 16) / 3 = 119; fitHouseW will floor to 110 and the plaque will
+  // shrink to ~110 × scale, leaving a small gutter.
+  const sideMargin = w < 768 ? 8 : 16;
+  const usableW = w - 2 * sideMargin;
+  const backHW = fitHouseW(usableW / backCount);
+  const frontHW = fitHouseW(usableW / frontCount);
+
+  // Back row: evenly spaced, biased slightly toward center so the row
+  // reads as "behind" relative to the wider front row.
+  for (let i = 0; i < backCount; i++) {
+    const t = backCount === 1 ? 0.5 : i / (backCount - 1);
+    const x = sideMargin + (usableW / backCount) * (i + 0.5);
     spots.push({
       houseX: x,
-      houseY,
+      houseY: backRowY,
       charX: x,
-      charY,
-      houseW: fitHouseW(w / Math.max(3, n - 1)),
-      houseH: fitHouseH(houseY, sc),
-      scale: sc,
-      facing: x < cx ? 1 : -1,
+      charY: frontPlateY,
+      houseW: backHW,
+      houseH: fitHouseH(backRowY, backSc),
+      scale: backSc,
+      facing: t < 0.5 ? 1 : -1,
+    });
+  }
+
+  // Front row: evenly spaced, full width.
+  for (let i = 0; i < frontCount; i++) {
+    const x = sideMargin + (usableW / frontCount) * (i + 0.5);
+    const t = frontCount === 1 ? 0.5 : i / (frontCount - 1);
+    spots.push({
+      houseX: x,
+      houseY: frontHouseY,
+      charX: x,
+      charY: frontRowY,
+      houseW: frontHW,
+      houseH: fitHouseH(frontHouseY, frontSc),
+      scale: frontSc,
+      facing: t < 0.5 ? 1 : -1,
     });
   }
   return spots;

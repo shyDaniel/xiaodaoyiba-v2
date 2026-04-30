@@ -512,8 +512,9 @@ export function MultiGamePage(): JSX.Element {
         </div>
       </header>
 
-      {/* Player roster strip — vertical column on desktop, horizontal
-          scrolling row on mobile so the canvas isn't covered. */}
+      {/* Player roster strip — vertical column on desktop, wrapped
+          flex-row on mobile so all N chips render inside the viewport
+          (FINAL_GOAL §H1 — no offscreen chips, no horizontal overflow). */}
       <div
         style={
           isMobile
@@ -524,10 +525,10 @@ export function MultiGamePage(): JSX.Element {
                 right: 0,
                 display: 'flex',
                 flexDirection: 'row',
-                gap: 6,
-                padding: '0 8px',
-                overflowX: 'auto',
-                whiteSpace: 'nowrap',
+                flexWrap: 'wrap',
+                justifyContent: 'center',
+                gap: 4,
+                padding: '0 6px',
                 zIndex: 5,
                 pointerEvents: 'auto',
               }
@@ -539,6 +540,8 @@ export function MultiGamePage(): JSX.Element {
                 flexDirection: 'column',
                 gap: 6,
                 zIndex: 5,
+                maxHeight: 'calc(100vh - 200px)',
+                flexWrap: 'wrap',
               }
         }
       >
@@ -552,23 +555,24 @@ export function MultiGamePage(): JSX.Element {
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                gap: 8,
-                padding: '4px 10px 4px 6px',
+                gap: isMobile ? 4 : 8,
+                padding: isMobile ? '3px 8px 3px 4px' : '4px 10px 4px 6px',
                 borderRadius: 999,
                 background: 'rgba(11,13,18,0.78)',
                 border: `2px solid ${toCss(accent)}`,
                 color: dead ? '#888' : '#f4ecd8',
-                fontSize: '0.85rem',
+                fontSize: isMobile ? '0.7rem' : '0.85rem',
                 fontWeight: 700,
                 letterSpacing: '0.04em',
                 boxShadow: '0 4px 8px rgba(0,0,0,0.45)',
                 textDecoration: dead ? 'line-through' : 'none',
+                maxWidth: isMobile ? '48vw' : 'unset',
               }}
             >
               <span
                 style={{
-                  width: 18,
-                  height: 18,
+                  width: isMobile ? 12 : 18,
+                  height: isMobile ? 12 : 18,
                   borderRadius: '50%',
                   background: toCss(accent),
                   display: 'inline-block',

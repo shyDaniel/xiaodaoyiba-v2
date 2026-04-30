@@ -121,6 +121,36 @@ describe('§H1 mobile + desktop layout: no clipping for 2..6 players × {1280×8
           expect(s.houseH).toBeGreaterThan(90);
         }
       });
+
+      // §H1 — same-row stations must NOT overlap horizontally. Stations
+      // in different rows (different houseY) may overlap in x because
+      // the z-order separation handles them.
+      test(`${vp.tag} ${n} players: same-row stations do not overlap in x`, () => {
+        const spots = computeSpots(n, vp.w, pTop, pBottom);
+        // Group by row (houseY rounded). Stations within ±2 px are
+        // considered "same row".
+        const rows = new Map<number, typeof spots>();
+        for (const s of spots) {
+          const key = Math.round(s.houseY / 4) * 4;
+          const arr = rows.get(key) ?? [];
+          arr.push(s);
+          rows.set(key, arr);
+        }
+        for (const arr of rows.values()) {
+          if (arr.length < 2) continue;
+          arr.sort((a, b) => a.houseX - b.houseX);
+          for (let i = 1; i < arr.length; i++) {
+            const a = arr[i - 1]!;
+            const b = arr[i]!;
+            const aRight = a.houseX + (a.houseW * 0.78 / 2 + 16) * a.scale;
+            const bLeft = b.houseX - (b.houseW * 0.78 / 2 + 16) * b.scale;
+            expect(
+              bLeft,
+              `${vp.tag} n=${n} same-row stations ${i - 1}/${i} overlap in x`,
+            ).toBeGreaterThanOrEqual(aRight - 1);
+          }
+        }
+      });
     }
   }
 });
