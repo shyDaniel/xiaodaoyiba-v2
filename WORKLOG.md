@@ -2189,3 +2189,87 @@ sits in its own DOM rect outside the canvas:
   or HandPicker DOM rects.
 - ✓ mobile 375×667: every character bottom_y < BattleLog
   bottom-sheet top_y; no chrome overlay on the playing field.
+
+---
+
+## iter-52 / S-416 — §H6 Character cuteness pass
+
+**What:** Replaced the legacy 4-color stick-figure rig in
+`packages/client/src/canvas/characters/Character.ts` with a
+chibi-proportioned, multi-feature rig satisfying FINAL_GOAL §H6:
+
+- **Big round chibi head** drawn as concentric `circle()` calls
+  (radii 26 / 24) with a chin shadow ellipse — head silhouette ≈
+  64–80px wide vs. 40px torso (1.6×–2× body width incl. hair).
+- **Eyes**: 9×9 rounded-rect sclera + 1px outline stroke, 4×4
+  colored pupil (tinted by `playerColor(id)` so each player has
+  unique iris color), and a 2×2 white specular highlight in the
+  upper-left of each pupil — the "alive" cuteness signature.
+- **5 mouth shapes** keyed off the state machine via a new
+  `setMouth(shape)` redraw method: smile (IDLE/CHEER), neutral
+  (PREP), grimace zigzag w/ teeth highlight (RUSH/STRIKE/PULL),
+  shocked O (SHAME), dead X (DEAD). State transitions trigger
+  redraw only on shape change (no per-frame redraw).
+- **4 procedural hair silhouettes** — `spiky`, `bowl`, `ponytail`,
+  `mohawk` — selected at construction by FNV-1a hash of the
+  playerId. Each silhouette has 2-tone shading (lighter band on
+  top, base below) and distinct sideburn/crown geometry so a
+  6-player room reads visually distinct.
+- **2-tone shading** on shirt (highlight band at top + shadow
+  band at bottom + chest-center crease + sleeve-cap shadow) and
+  pants (outer-leg highlight + inner-leg shadow + waist
+  stitching). Sleeve cuff highlight on the front arm.
+- **Cheek blush dots** + forehead highlight ellipse for
+  additional cuteness read.
+- **Idle squash-and-stretch** with per-character period
+  (1.5–2.5s, jittered by hash bits 8–15 of the id) and phase
+  offset (0–2π, jittered by hash bits 16–23) — body Y scale
+  oscillates ±5% with inverse X for volume conservation.
+  Suppressed during active states (RUSH/STRIKE/PULL) so the
+  squash doesn't fight the action choreography.
+- Brows added as separate `Graphics` so future iterations can
+  animate them (frown on grimace, raise on shock).
+
+**Acceptance grep (FINAL_GOAL §H6):**
+```
+$ grep -E -c 'specular|highlight'  Character.ts → 13
+$ grep -E -c 'sclera|pupil'        Character.ts → 14
+$ grep -E -c 'hairStyle|hairSilhouette' Character.ts → 4
+$ grep -E -c 'squash|stretch'      Character.ts → 17
+```
+All four required patterns hit.
+
+**Verification:**
+- `pnpm --filter @xdyb/client build` → exits 0, bundle 548.67 kB
+  (gzip 175.18 kB). Up ~3.85 kB from S-411 — overhead is the
+  added Graphics geometry + setMouth redraw method.
+- `pnpm -r test` → 79 shared + 21 server + 116 client tests pass
+  (216 total), no regressions.
+- Drove a 6-bot multi room (host玩家98 + counter, random, iron,
+  mirror, counter#2) at 1280×800 via Playwright MCP:
+  - **Init screenshot** (`s416-game-init-1280-6p.png`):
+    All 6 characters visible with distinct chibi heads, visible
+    sclera+pupil+specular eyes, smile mouths (IDLE state),
+    cheek blush, 2-tone shirts (red/cyan/yellow shading
+    bands). Hair silhouettes visibly differ across the 6
+    players (peaked/spiky/bowl/round variants visible).
+  - **Action screenshot** (`s416-r1-action-1280-6p.png`,
+    R1.pull_pants resolved): Top-row victims (玩家98, counter,
+    mirror, random) display the **shocked O mouth** while
+    bottom-row characters retain the **smile mouth** — mouth
+    state machine working. Red briefs persistent on victims.
+    All eyes still show specular highlights.
+
+**Acceptance per FINAL_GOAL §H6 (S-416):**
+- ✓ chibi proportions — head ≈ 1.6–2× body width via circle
+  rendering + hair silhouette extension.
+- ✓ sclera + pupil + specular highlight — visible white pixel
+  inside each pupil at viewport scale.
+- ✓ ≥3 mouth states keyed off state machine — 5 ship in this
+  iter (smile/neutral/grimace/shocked/dead).
+- ✓ ≥2 procedural hair silhouettes by hash(playerId) — 4 ship
+  (spiky/bowl/ponytail/mohawk), deterministic via FNV-1a.
+- ✓ 2-tone shading on shirt + pants — highlight + shadow bands
+  on both garments, chest crease, sleeve cuff.
+- ✓ idle squash-and-stretch every 1.5–2.5s — period jittered
+  per-player so a row doesn't pulse in lockstep.
