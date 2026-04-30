@@ -7,8 +7,9 @@
 //  - 20 simulated rounds advance state without exceptions and without
 //    infinite loops.
 //  - Engine purity: input arrays/maps are not mutated.
-//  - Phase timeline sums to ACTION_TOTAL_MS exactly (also asserted at
-//    module-load in engine.ts, but covered here too for test visibility).
+//  - 7-phase timeline (REVEAL+PREP→RETURN) sums to ROUND_TOTAL_MS exactly
+//    and the action sub-segment still sums to ACTION_TOTAL_MS (also
+//    asserted at module-load in engine.ts, but covered here for visibility).
 //  - DEAD players never participate in RPS or get acted on.
 //  - PULL_PANTS persists: a player's pants_down stage carries forward to
 //    subsequent rounds (FINAL_GOAL §C7 truth-source check at the engine
@@ -21,8 +22,10 @@ import {
   PHASE_T_PREP,
   PHASE_T_PULL_PANTS,
   PHASE_T_RETURN,
+  PHASE_T_REVEAL,
   PHASE_T_RUSH,
   PHASE_T_STRIKE,
+  ROUND_TOTAL_MS,
   SHAME_FRAME_HOLD_MS,
   TIE_NARRATION_HOLD_MS,
 } from './timing.js';
@@ -36,18 +39,38 @@ function mkPlayers(ids: string[]): PlayerState[] {
 }
 
 describe('PHASE_OFFSETS', () => {
-  it('matches timing.ts cumulative offsets and totals ACTION_TOTAL_MS', () => {
-    expect(PHASE_OFFSETS.PREP).toBe(0);
-    expect(PHASE_OFFSETS.RUSH).toBe(PHASE_T_PREP);
-    expect(PHASE_OFFSETS.PULL_PANTS).toBe(PHASE_T_PREP + PHASE_T_RUSH);
-    expect(PHASE_OFFSETS.STRIKE).toBe(PHASE_T_PREP + PHASE_T_RUSH + PHASE_T_PULL_PANTS);
+  it('matches timing.ts cumulative offsets and totals ROUND_TOTAL_MS', () => {
+    // REVEAL is the first phase (FINAL_GOAL §H2): 0 → PHASE_T_REVEAL.
+    expect(PHASE_OFFSETS.REVEAL).toBe(0);
+    expect(PHASE_OFFSETS.PREP).toBe(PHASE_T_REVEAL);
+    expect(PHASE_OFFSETS.RUSH).toBe(PHASE_T_REVEAL + PHASE_T_PREP);
+    expect(PHASE_OFFSETS.PULL_PANTS).toBe(
+      PHASE_T_REVEAL + PHASE_T_PREP + PHASE_T_RUSH,
+    );
+    expect(PHASE_OFFSETS.STRIKE).toBe(
+      PHASE_T_REVEAL + PHASE_T_PREP + PHASE_T_RUSH + PHASE_T_PULL_PANTS,
+    );
     expect(PHASE_OFFSETS.IMPACT).toBe(
-      PHASE_T_PREP + PHASE_T_RUSH + PHASE_T_PULL_PANTS + PHASE_T_STRIKE,
+      PHASE_T_REVEAL +
+        PHASE_T_PREP +
+        PHASE_T_RUSH +
+        PHASE_T_PULL_PANTS +
+        PHASE_T_STRIKE,
     );
     expect(PHASE_OFFSETS.RETURN).toBe(
-      PHASE_T_PREP + PHASE_T_RUSH + PHASE_T_PULL_PANTS + PHASE_T_STRIKE + PHASE_T_IMPACT,
+      PHASE_T_REVEAL +
+        PHASE_T_PREP +
+        PHASE_T_RUSH +
+        PHASE_T_PULL_PANTS +
+        PHASE_T_STRIKE +
+        PHASE_T_IMPACT,
     );
-    expect(PHASE_OFFSETS.RETURN + PHASE_T_RETURN).toBe(ACTION_TOTAL_MS);
+    // Total round timeline closes at ROUND_TOTAL_MS, and the action
+    // sub-segment (PREP→RETURN, the part after REVEAL) still totals
+    // ACTION_TOTAL_MS so older callers reading "action duration" stay
+    // correct.
+    expect(PHASE_OFFSETS.RETURN + PHASE_T_RETURN).toBe(ROUND_TOTAL_MS);
+    expect(ROUND_TOTAL_MS - PHASE_OFFSETS.PREP).toBe(ACTION_TOTAL_MS);
   });
 });
 
@@ -77,23 +100,41 @@ describe('resolveRound — acceptance scenario (4-player RPSR)', () => {
     const out = resolveRound(players, 1, { choices });
     const phases = effectsOfType(out.effects, 'PHASE_START');
     expect(phases.map((p) => p.phase)).toEqual([
-      'PREP', 'RUSH', 'PULL_PANTS', 'STRIKE', 'IMPACT', 'RETURN',
+      'REVEAL', 'PREP', 'RUSH', 'PULL_PANTS', 'STRIKE', 'IMPACT', 'RETURN',
     ]);
     expect(phases.map((p) => p.atMs)).toEqual([
       0,
-      PHASE_T_PREP,
-      PHASE_T_PREP + PHASE_T_RUSH,
-      PHASE_T_PREP + PHASE_T_RUSH + PHASE_T_PULL_PANTS,
-      PHASE_T_PREP + PHASE_T_RUSH + PHASE_T_PULL_PANTS + PHASE_T_STRIKE,
-      PHASE_T_PREP + PHASE_T_RUSH + PHASE_T_PULL_PANTS + PHASE_T_STRIKE + PHASE_T_IMPACT,
+      PHASE_T_REVEAL,
+      PHASE_T_REVEAL + PHASE_T_PREP,
+      PHASE_T_REVEAL + PHASE_T_PREP + PHASE_T_RUSH,
+      PHASE_T_REVEAL + PHASE_T_PREP + PHASE_T_RUSH + PHASE_T_PULL_PANTS,
+      PHASE_T_REVEAL + PHASE_T_PREP + PHASE_T_RUSH + PHASE_T_PULL_PANTS + PHASE_T_STRIKE,
+      PHASE_T_REVEAL + PHASE_T_PREP + PHASE_T_RUSH + PHASE_T_PULL_PANTS + PHASE_T_STRIKE + PHASE_T_IMPACT,
     ]);
     expect(phases.map((p) => p.durationMs)).toEqual([
-      PHASE_T_PREP, PHASE_T_RUSH, PHASE_T_PULL_PANTS,
+      PHASE_T_REVEAL, PHASE_T_PREP, PHASE_T_RUSH, PHASE_T_PULL_PANTS,
       PHASE_T_STRIKE, PHASE_T_IMPACT, PHASE_T_RETURN,
     ]);
-    // Last phase starts + duration sums to total
+    // Last phase starts + duration sums to the full round timeline
+    // (REVEAL + ACTION_TOTAL_MS = ROUND_TOTAL_MS).
     const last = phases[phases.length - 1]!;
-    expect(last.atMs + last.durationMs).toBe(ACTION_TOTAL_MS);
+    expect(last.atMs + last.durationMs).toBe(ROUND_TOTAL_MS);
+  });
+
+  it('emits a single RPS_REVEAL effect carrying every alive player\'s throw', () => {
+    const out = resolveRound(players, 1, { choices });
+    const reveals = effectsOfType(out.effects, 'RPS_REVEAL');
+    expect(reveals).toHaveLength(1);
+    const reveal = reveals[0]!;
+    expect(reveal.atMs).toBe(0);
+    expect(reveal.durationMs).toBe(PHASE_T_REVEAL);
+    // One row per player, in input order, carrying their throw.
+    expect(reveal.throws).toEqual([
+      { playerId: 'a', choice: 'ROCK' },
+      { playerId: 'b', choice: 'PAPER' },
+      { playerId: 'c', choice: 'SCISSORS' },
+      { playerId: 'd', choice: 'ROCK' },
+    ]);
   });
 
   it('emits PULL_PANTS ACTION effects pairing winners → losers in order', () => {
@@ -411,12 +452,13 @@ describe('resolveRound — 20-round simulation', () => {
       expect(out.effects[0]!.type).toBe('ROUND_START');
       expect((out.effects[0] as Extract<Effect, { type: 'ROUND_START' }>).atMs).toBe(0);
 
-      // If we had an action timeline, it sums to ACTION_TOTAL_MS
+      // If we had an action timeline, it sums to ROUND_TOTAL_MS
+      // (REVEAL + ACTION_TOTAL_MS) — see FINAL_GOAL §H2.
       const phases = effectsOfType(out.effects, 'PHASE_START');
       if (phases.length > 0) {
-        expect(phases).toHaveLength(6);
+        expect(phases).toHaveLength(7);
         const last = phases[phases.length - 1]!;
-        expect(last.atMs + last.durationMs).toBe(ACTION_TOTAL_MS);
+        expect(last.atMs + last.durationMs).toBe(ROUND_TOTAL_MS);
       }
 
       // Alive count never increases

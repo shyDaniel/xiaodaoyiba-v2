@@ -123,11 +123,15 @@ Inputs:
 Outputs:
 - `players: PlayerState[]` — fresh array; original is never mutated.
 - `effects: Effect[]` — flat ordered choreography. Always starts with
-  `ROUND_START`; on a tie round emits `TIE_NARRATION` + a `NARRATION` mirror
-  for log uniformity; on an action round emits `RPS_RESOLVED`, the full 6
-  `PHASE_START` boundaries (PREP/RUSH/PULL_PANTS/STRIKE/IMPACT/RETURN with
-  `atMs` summing to exactly `ACTION_TOTAL_MS`), then per-pairing `ACTION` +
-  `SET_STAGE` + `NARRATION`. `GAME_OVER` appends if ≤ 1 player remains alive.
+  `ROUND_START`, immediately followed by a single `RPS_REVEAL` carrying
+  every alive player's choice for the §H2 reveal hold (atMs=0, the
+  whole reveal frame sits inside `PHASE_T_REVEAL=1500ms` before any
+  action effect). On a tie round it then emits `TIE_NARRATION` + a
+  `NARRATION` mirror for log uniformity; on an action round it emits
+  `RPS_RESOLVED`, the full 7 `PHASE_START` boundaries (REVEAL/PREP/
+  RUSH/PULL_PANTS/STRIKE/IMPACT/RETURN with `atMs` summing to exactly
+  `ROUND_TOTAL_MS`), then per-pairing `ACTION` + `SET_STAGE` +
+  `NARRATION`. `GAME_OVER` appends if ≤ 1 player remains alive.
 - `narration: string` — human-readable Chinese, one line per pairing,
   joined by `\n`. Drives the BattleLog right rail and the sim CLI's
   grep-able output.
@@ -140,11 +144,16 @@ Action selection rule: the *target's pre-round stage* picks the kind:
 a player who is already pants-down dies on their next loss — exactly the
 v1 spec preserved.
 
-The 5-phase action timeline is computed at module-load from `timing.ts` and
-self-validated to sum to `ACTION_TOTAL_MS` — a typo in `timing.ts` throws
-on import rather than producing a desynced choreography. `PHASE_OFFSETS`
-(re-exported from the engine) gives callers the cumulative-offset map
-without iterating the timeline.
+The 7-phase round timeline is computed at module-load from `timing.ts` and
+self-validated to sum to `ROUND_TOTAL_MS` (REVEAL=1500 + ACTION=4000) — a
+typo in `timing.ts` throws on import rather than producing a desynced
+choreography. `PHASE_OFFSETS` (re-exported from the engine) gives callers
+the cumulative-offset map without iterating the timeline. REVEAL sits at
+atMs=0 ahead of the action sub-segment, so action offsets are
+`PHASE_T_REVEAL`-shifted (PREP=1500, RUSH=1800, PULL_PANTS=2400,
+STRIKE=3300, IMPACT=3900, RETURN=4700) — downstream consumers
+(EffectPlayer, sim CLI, server hold timer) read these offsets so
+adding/changing reveal duration ripples through automatically.
 
 Test coverage: `packages/shared/src/game/engine.test.ts` (16 cases) covers
 the FINAL_GOAL §A acceptance scenario (4-player ROCK,PAPER,SCISSORS,ROCK →
@@ -247,6 +256,16 @@ packages/client/src/
     characters/Character.ts chibi rig + IDLE/PREP/RUSH/STRIKE/PULL/
                            SHAME/DEAD/CHEER state machine; persistent
                            setPantsDown() across rounds (FINAL_GOAL §C7)
+    RevealGlyphs.ts        §H2 reveal overlay — one drawn-shape gesture
+                           badge per alive player (rock/paper/scissors
+                           as filled-circle Graphics, NOT emoji, so
+                           rendering is platform-independent and CI
+                           screenshots match Android Chrome). Shown by
+                           EffectPlayer at REVEAL t=0, hidden at
+                           PHASE_T_REVEAL=1500ms. Sits on the gameplay
+                           layer with zIndex=100 and the layer's
+                           sortableChildren=true so reconciled-in
+                           characters/houses don't paint over it.
 ```
 
 Render-loop contract: GameStage adds a single `app.ticker.add(tick)`

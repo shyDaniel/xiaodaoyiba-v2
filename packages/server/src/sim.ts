@@ -28,6 +28,8 @@
 
 import {
   ACTION_TOTAL_MS,
+  PHASE_T_REVEAL,
+  ROUND_TOTAL_MS,
   BOT_STRATEGIES,
   getBotStrategy,
   isBotKind,
@@ -550,9 +552,25 @@ function emitRound(r: RoundReport, format: ParsedArgs['format']): void {
     ? '-'
     : r.winnerPicks.map((p) => p.action).join('|');
 
+  // §H2 REVEAL row — every alive player's throw, emitted BEFORE the action
+  // row so a grep on `phase=reveal` recovers the canonical reveal hold and
+  // its glyph payload independent of action outcome (tie or otherwise).
+  const throwsKv = r.throws.map(([id, c]) => `${id}:${c}`).join(',');
+
   if (format === 'jsonl') {
     process.stdout.write(
       JSON.stringify({
+        phase: 'reveal',
+        round: r.round,
+        game: r.game,
+        gameRound: r.gameRound,
+        throws: r.throws.map(([id, c]) => ({ id, choice: c })),
+        durationMs: PHASE_T_REVEAL,
+      }) + '\n',
+    );
+    process.stdout.write(
+      JSON.stringify({
+        phase: 'action',
         round: r.round,
         game: r.game,
         gameRound: r.gameRound,
@@ -579,7 +597,11 @@ function emitRound(r: RoundReport, format: ParsedArgs['format']): void {
   const target = r.target ?? '-';
   const narration = r.narration.replaceAll('\n', ' / ');
   process.stdout.write(
-    `round=${r.round} game=${r.game} gameRound=${r.gameRound} ` +
+    `phase=reveal round=${r.round} game=${r.game} gameRound=${r.gameRound} ` +
+      `throws_kv=[${throwsKv}] reveal_ms=${PHASE_T_REVEAL}\n`,
+  );
+  process.stdout.write(
+    `phase=action round=${r.round} game=${r.game} gameRound=${r.gameRound} ` +
       `throws=[${throws}] winners=[${winners}] losers=[${losers}] ` +
       `action=${r.action} target=${target} ` +
       `winner_picked_target=${pickedTarget} winner_picked_action=${pickedAction} ` +
@@ -613,6 +635,7 @@ function emitSummary(stats: SummaryStats, args: ParsedArgs): BudgetViolations {
       `wins_by_player={${winsKv}} ` +
       `throws_by_player={${throwsKv}} ` +
       `seed=${args.seed} action_total_ms=${ACTION_TOTAL_MS} ` +
+      `reveal_ms=${PHASE_T_REVEAL} round_total_ms=${ROUND_TOTAL_MS} ` +
       `duration_ms=${stats.durationMs}\n`,
   );
 

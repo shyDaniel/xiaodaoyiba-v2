@@ -10,7 +10,7 @@
 // a Socket.IO transport instead of stdout.
 
 import {
-  ACTION_TOTAL_MS,
+  ROUND_TOTAL_MS,
   TIE_NARRATION_HOLD_MS,
   type BotKind,
   type BotStrategy,
@@ -319,7 +319,7 @@ export class Room {
     // Schedule the next round to begin only after the current round's animation
     // finishes — uses the same canonical timing.ts constants the client honors.
     const isTie = result.rps.tie;
-    const holdMs = isTie ? TIE_NARRATION_HOLD_MS : ACTION_TOTAL_MS;
+    const holdMs = isTie ? TIE_NARRATION_HOLD_MS : ROUND_TOTAL_MS;
     setTimeout(() => {
       if (this.phase === 'PLAYING') this.beginRound();
     }, holdMs);

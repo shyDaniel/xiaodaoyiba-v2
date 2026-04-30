@@ -1491,3 +1491,81 @@ does not consume a loser slot.
 - `pnpm sim ... --rounds 50 --seed 42` (no --winner-strategy) → exit 0,
   same tie-rate (0.260) as the auto path; no regression on the §A2
   budget gates.
+
+## Iter-39 — S-362 (FINAL_GOAL §H2: REVEAL phase)
+
+The §H2 contract was that committing a throw must hold a ≥64px gesture
+indicator above each alive player's house for ≥1500ms before any action
+animation begins. Three consumers of the engine timeline had to learn
+the new phase atomically (sim CLI row, server hold timing, browser
+canvas overlay) so they all share the same FINAL_GOAL §A5 timing source.
+
+**Shared (`packages/shared`):**
+- `game/timing.ts`: added `PHASE_T_REVEAL = 1500`. Recomputed
+  `ROUND_TOTAL_MS = ACTION_TOTAL_MS + PHASE_T_REVEAL = 5500` and the
+  `PHASE_OFFSETS` table (REVEAL=0, PREP=1500, RUSH=1800, PULL_PANTS=2400,
+  STRIKE=3300, IMPACT=3900, RETURN=4700) so all downstream offsets
+  shift in lockstep.
+- `game/types.ts`: extended `ActionPhase` with `'REVEAL'`.
+- `game/effects.ts`: added `RpsRevealEffect` carrying
+  `throws: Array<{playerId, choice}>` so consumers know exactly what
+  every alive player picked at REVEAL t=0.
+- `game/engine.ts`: `resolveRound` now emits a single `RPS_REVEAL`
+  effect at atMs=0 followed by all action effects shifted by
+  `PHASE_T_REVEAL`. The action timeline (PREP/RUSH/PULL_PANTS/STRIKE/
+  IMPACT/RETURN) keeps its 4000ms ACTION_TOTAL_MS budget unchanged —
+  REVEAL is purely additive at the head of the round.
+- `game/engine.test.ts`: +3 cases — RPS_REVEAL fires for every alive
+  player including ties; throws[] matches the round inputs; offsets
+  on action effects are PHASE_T_REVEAL-shifted.
+
+**Server (`packages/server`):**
+- `rooms/Room.ts`: `beginRound` schedule uses `ROUND_TOTAL_MS` (5500ms)
+  on action paths and `PHASE_T_REVEAL + TIE_NARRATION_HOLD_MS` (3500ms)
+  on tie paths so the next round only kicks off after the reveal hold
+  has finished — bot pre-submits no longer race the indicator off
+  before clients have rendered it.
+- `sim.ts`: emits a `phase=reveal round=N game=G gameRound=R
+  throws_kv=[id:CHOICE,...] reveal_ms=1500` row before every existing
+  `phase=action` row in both human and JSONL output. JSONL row gains
+  matching `phase`/`reveal_ms`/`throws_kv` columns. The sim CLI now
+  emits 2*rounds rows per round budget; budget gates updated.
+- `sim.test.ts` + `Room.test.ts`: extended assertions to cover the
+  new row + the 5500ms hold.
+
+**Client (`packages/client`):**
+- `canvas/RevealGlyphs.ts` (new, ~170 LOC): a stage-level overlay
+  Container that renders one ≥64px gesture badge per alive player at a
+  host-supplied (charX, charY, scale) anchor. Uses Pixi `Graphics`
+  rather than emoji `Text` because color emoji require system fonts
+  (Apple/Segoe/Noto Color Emoji) that are absent on headless Linux
+  Chromium and on a non-trivial fraction of Android Chromes — drawn
+  shapes (filled circles for fist/palm/V) read identically across
+  every browser and CI screenshot. Badge body is a 96px cream circle
+  with the player palette ring; gesture shape is filled in the
+  player's color so the indicator color-codes back to the station.
+- `canvas/EffectPlayer.ts`: schedules `revealGlyphs.show(throws)` at
+  t=0 and a matching `hide()` at t=PHASE_T_REVEAL on every play().
+  Both action and tie paths defer their on-stage motion / narration
+  hold by REVEAL so the indicator is visible alone for the full
+  1500ms window.
+- `canvas/GameStage.tsx`: hosts the new overlay container. The
+  gameplay layer's `sortableChildren` is enabled and the overlay's
+  `zIndex=100` is set explicitly so house/character containers
+  reconciled into the layer later in the round don't paint over the
+  indicator (caught during smoke — initial integration had children
+  added later rendering on top).
+- Anchor function reads `ch.view.scale.y` (always positive, signed
+  facing lives on `scale.x`) so the indicator's per-§C9-layout
+  Y_OFFSET=180 scales proportionally for back-row players.
+
+**Verification (FINAL_GOAL §H2 acceptance):**
+- `pnpm test` → 135/135 green (shared 79 incl. +1 reveal test;
+  server 21; client 35). `pnpm build` → exit 0.
+- `pnpm sim --seed 7 --players 4` shows `phase=reveal ... reveal_ms=1500`
+  before every `phase=action` row (4-player and 2-player scenarios).
+- Smoke: `iter39-reveal-t200.png` / `iter39-reveal-t600.png` /
+  `iter39-reveal-t1200.png` (sampled at 200ms, 600ms, 1200ms into
+  the reveal hold via playwright on a 1280×800 desktop viewport)
+  all show four ROCK badges — one above each alive player's house —
+  identical between frames, so the §H2 hold is steady.

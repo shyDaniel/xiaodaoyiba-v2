@@ -33,8 +33,10 @@ import {
   PHASE_T_PREP,
   PHASE_T_PULL_PANTS,
   PHASE_T_RETURN,
+  PHASE_T_REVEAL,
   PHASE_T_RUSH,
   PHASE_T_STRIKE,
+  ROUND_TOTAL_MS,
   SHAME_FRAME_HOLD_MS,
   TIE_NARRATION_HOLD_MS,
 } from './timing.js';
@@ -49,14 +51,17 @@ import { resolveRps, type PlayerId, type RpsChoice, type RpsResolution } from '.
 import { defaultNarrator } from '../narrative/lines.js';
 
 /** Phase boundary (atMs offset, durationMs) — cumulatively sums to
- *  ACTION_TOTAL_MS. Computed from timing.ts so swapping the constants
- *  flows everywhere. */
+ *  ROUND_TOTAL_MS (REVEAL + ACTION_TOTAL_MS). Computed from timing.ts so
+ *  swapping the constants flows everywhere. The REVEAL phase opens every
+ *  non-tie round so all players' throws can be displayed simultaneously
+ *  above their stations (FINAL_GOAL §H2) before the rush kicks in. */
 const PHASE_TIMELINE: ReadonlyArray<{
   phase: ActionPhase;
   atMs: number;
   durationMs: number;
 }> = (() => {
   const phases: Array<{ phase: ActionPhase; durationMs: number }> = [
+    { phase: 'REVEAL', durationMs: PHASE_T_REVEAL },
     { phase: 'PREP', durationMs: PHASE_T_PREP },
     { phase: 'RUSH', durationMs: PHASE_T_RUSH },
     { phase: 'PULL_PANTS', durationMs: PHASE_T_PULL_PANTS },
@@ -73,23 +78,33 @@ const PHASE_TIMELINE: ReadonlyArray<{
 })();
 
 /** atMs of the start of each phase, for callers that need the offsets
- *  without iterating. Validated as cumulative-sums-to-ACTION_TOTAL_MS at
- *  module load. */
+ *  without iterating. Validated as cumulative-sums-to-ROUND_TOTAL_MS at
+ *  module load. After §H2 REVEAL=0, PREP=PHASE_T_REVEAL=1500, …,
+ *  RETURN+PHASE_T_RETURN=ROUND_TOTAL_MS=5500. */
 export const PHASE_OFFSETS: Readonly<Record<ActionPhase, number>> = (() => {
   const out: Record<string, number> = {};
   for (const { phase, atMs } of PHASE_TIMELINE) out[phase] = atMs;
   return out as Record<ActionPhase, number>;
 })();
 
-/** Self-test: the 5-phase timeline must sum to exactly ACTION_TOTAL_MS.
- *  This runs at import time so a typo in timing.ts is caught immediately
- *  instead of producing a desynced choreography. */
+/** Self-test: the 7-phase timeline must sum to exactly ROUND_TOTAL_MS,
+ *  and the action sub-segment (PREP→RETURN, i.e. excluding REVEAL) must
+ *  still sum to ACTION_TOTAL_MS so callers reasoning about action
+ *  duration in isolation keep working. This runs at import time so a
+ *  typo in timing.ts is caught immediately instead of producing a
+ *  desynced choreography. */
 {
   const last = PHASE_TIMELINE[PHASE_TIMELINE.length - 1]!;
   const total = last.atMs + last.durationMs;
-  if (total !== ACTION_TOTAL_MS) {
+  if (total !== ROUND_TOTAL_MS) {
     throw new Error(
-      `[engine] PHASE_TIMELINE sums to ${total}ms but ACTION_TOTAL_MS=${ACTION_TOTAL_MS}; check timing.ts`,
+      `[engine] PHASE_TIMELINE sums to ${total}ms but ROUND_TOTAL_MS=${ROUND_TOTAL_MS}; check timing.ts`,
+    );
+  }
+  const actionSegment = total - PHASE_T_REVEAL;
+  if (actionSegment !== ACTION_TOTAL_MS) {
+    throw new Error(
+      `[engine] action sub-segment is ${actionSegment}ms but ACTION_TOTAL_MS=${ACTION_TOTAL_MS}; check timing.ts`,
     );
   }
 }
@@ -173,6 +188,21 @@ export function resolveRound(
   }
 
   const rps = resolveRps(orderedChoices);
+
+  // ── REVEAL frame (FINAL_GOAL §H2) ─────────────────────────────────────
+  // Emit one RPS_REVEAL effect carrying every alive player's throw so the
+  // canvas can render glyphs above each station for the entire reveal
+  // hold. We emit on every non-empty round (tie and non-tie). The empty
+  // round path (no choices) skips the reveal — there is nothing to show.
+  if (orderedChoices.length > 0) {
+    effects.push({
+      type: 'RPS_REVEAL',
+      round,
+      atMs: 0,
+      durationMs: PHASE_T_REVEAL,
+      throws: orderedChoices.map(([playerId, choice]) => ({ playerId, choice })),
+    });
+  }
 
   // ── Tie path ──────────────────────────────────────────────────────────
   if (rps.tie) {
@@ -372,10 +402,13 @@ function finalize(
   const isGameOver = alive.length <= 1;
 
   if (isGameOver) {
+    // GAME_OVER fires at the end of the round timeline (REVEAL +
+    // ACTION_TOTAL_MS) so the renderer's confetti burst lines up with
+    // the final RETURN beat rather than overlapping the reveal.
     effects.push({
       type: 'GAME_OVER',
       round,
-      atMs: ACTION_TOTAL_MS,
+      atMs: ROUND_TOTAL_MS,
       winnerId,
     });
   }

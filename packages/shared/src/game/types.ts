@@ -43,11 +43,15 @@ export type PlayerStage = 'ALIVE_CLOTHED' | 'ALIVE_PANTS_DOWN' | 'DEAD';
 export type ActionKind = 'PULL_PANTS' | 'CHOP' | 'PULL_OWN_PANTS_UP' | 'NONE';
 
 /**
- * 5-phase action timeline (FINAL_GOAL §A5/§B4). The engine tags each action
- * with its phase boundaries so sim, server, and client all advance the same
- * timeline. Names match timing.ts constants 1:1.
+ * 7-phase round timeline (FINAL_GOAL §A5/§B4/§H2). The engine tags each
+ * round with its phase boundaries so sim, server, and client all advance
+ * the same timeline. Names match timing.ts constants 1:1. REVEAL is the
+ * pre-action hold during which every alive player's RPS choice is rendered
+ * as a large glyph above their station so a first-time viewer can scan the
+ * field and count the distribution before the rush begins (§H2).
  */
 export type ActionPhase =
+  | 'REVEAL'
   | 'PREP'
   | 'RUSH'
   | 'PULL_PANTS'

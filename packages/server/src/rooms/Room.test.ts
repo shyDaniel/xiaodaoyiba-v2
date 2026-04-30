@@ -114,8 +114,9 @@ describe('Room', () => {
     // round's bot pre-submit triggers a new snapshot). Let's just make sure
     // no second round was emitted.
     expect(bx.rounds.length).toBe(1);
-    // advance past ACTION_TOTAL_MS (4000) — second round should now begin
-    vi.advanceTimersByTime(5000);
+    // advance past ROUND_TOTAL_MS (5500 = REVEAL 1500 + ACTION 4000) —
+    // second round should now begin (FINAL_GOAL §H2 reveal hold).
+    vi.advanceTimersByTime(6000);
     // No new round broadcast yet (humans haven't submitted), but snapshot
     // round counter advances to 2 once beginRound runs.
     const last = bx.snapshots.at(-1);
@@ -162,7 +163,7 @@ describe('Room', () => {
     let safety = 100;
     while (bx.rounds.at(-1)?.isGameOver !== true && safety-- > 0) {
       room.submitChoice('sock-host', 'ROCK');
-      vi.advanceTimersByTime(5000);
+      vi.advanceTimersByTime(6000);
     }
     expect(safety).toBeGreaterThan(0);
     expect(bx.rounds.at(-1)?.isGameOver).toBe(true);

@@ -31,13 +31,14 @@
 // hands back an updated `players` array, so server-side this is purely
 // informational.
 
-import type { PlayerId } from './rps.js';
+import type { PlayerId, RpsChoice } from './rps.js';
 import type { ActionKind, ActionPhase, PlayerStage } from './types.js';
 
 /** Discriminated union covering every choreographed beat in a round. */
 export type Effect =
   | RoundStartEffect
   | TieNarrationEffect
+  | RpsRevealEffect
   | RpsResolvedEffect
   | PhaseStartEffect
   | ActionEffect
@@ -76,6 +77,24 @@ export interface RpsResolvedEffect {
   losers: PlayerId[];
   winningChoice: 'ROCK' | 'PAPER' | 'SCISSORS';
   reason: 'two-way' | 'majority' | 'outlier';
+}
+
+/**
+ * Emitted on EVERY non-empty RPS round (tie or non-tie) at atMs=0 so
+ * consumers can render every alive player's throw simultaneously above
+ * their station for the duration of the REVEAL phase (FINAL_GOAL §H2).
+ *
+ * `throws` carries one (playerId, choice) pair per alive player who
+ * submitted a throw, in player-iteration order. Holding the reveal frame
+ * for ≥ PHASE_T_REVEAL ms is the single feature that lets a first-time
+ * viewer count the distribution before the action timeline starts.
+ */
+export interface RpsRevealEffect {
+  type: 'RPS_REVEAL';
+  round: number;
+  atMs: 0;
+  durationMs: number;
+  throws: Array<{ playerId: PlayerId; choice: RpsChoice }>;
 }
 
 /** A phase boundary inside the action timeline. Six fire per non-tie round,

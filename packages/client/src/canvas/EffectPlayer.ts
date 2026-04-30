@@ -30,7 +30,9 @@ import {
   ACTION_TOTAL_MS,
   PHASE_T_PULL_PANTS,
   PHASE_T_RETURN,
+  PHASE_T_REVEAL,
   PHASE_T_RUSH,
+  ROUND_TOTAL_MS,
   TIE_NARRATION_HOLD_MS,
 } from '@xdyb/shared';
 import type { Character } from './characters/Character.js';
@@ -71,6 +73,19 @@ export interface EffectPlayerScene {
   /** Optional viewport dims for confetti positioning (centered top of
    *  screen). Falls back to 0 if not provided. */
   getViewportSize?: () => { width: number; height: number };
+  /** §H2 REVEAL phase glyph layer. The host renders a ≥64px gesture
+   *  glyph above each alive player's station for PHASE_T_REVEAL ms.
+   *  Optional so unit tests can run without supplying a layer; calls
+   *  degrade to silent no-ops in that case. */
+  revealGlyphs?: {
+    show(
+      throws: ReadonlyArray<{
+        playerId: PlayerId;
+        choice: 'ROCK' | 'PAPER' | 'SCISSORS';
+      }>,
+    ): void;
+    hide(): void;
+  };
 }
 
 export interface PlayEffectsOptions {
@@ -144,6 +159,7 @@ export class EffectPlayer {
     this.timers = [];
     this.active = false;
     this.scene.camera?.reset();
+    this.scene.revealGlyphs?.hide();
   }
 
   /** Returns true while a play() is in flight. */
@@ -182,12 +198,27 @@ export class EffectPlayer {
     const nicknameById = new Map<PlayerId, string>();
     for (const p of players) nicknameById.set(p.id, p.nickname);
 
+    // ── REVEAL frame (FINAL_GOAL §H2) ──────────────────────────────────
+    // Render every alive player's chosen shape as a ≥64px glyph above
+    // their station for the entire reveal hold. Fires for both tie and
+    // action paths, so a viewer counts the distribution before the
+    // round outcome changes the screen. We emit at t=0 and auto-clear
+    // at t=PHASE_T_REVEAL; the action timeline (or tie hold) starts
+    // immediately after.
+    const revealEffect = effects.find((e) => e.type === 'RPS_REVEAL');
+    if (revealEffect && revealEffect.type === 'RPS_REVEAL') {
+      playSfx('reveal');
+      this.scene.revealGlyphs?.show(revealEffect.throws);
+      scheduleAt(this.timers, t0, PHASE_T_REVEAL, () => {
+        this.scene.revealGlyphs?.hide();
+      });
+    }
+
     // ── Tie path ────────────────────────────────────────────────────────
     const tie = effects.find((e) => e.type === 'TIE_NARRATION');
     if (tie && tie.type === 'TIE_NARRATION') {
       // No character motion on a tie — just emit the narration row, sit
-      // for the canonical hold, then resolve.
-      playSfx('reveal');
+      // for the canonical hold (after the reveal frame), then resolve.
       if (options.onNarration) {
         options.onNarration({
           atMs: 0,
@@ -195,14 +226,14 @@ export class EffectPlayer {
           verb: '平',
         });
       }
-      await waitMs(TIE_NARRATION_HOLD_MS);
+      // Reveal already played the cue sound. Hold for REVEAL + tie
+      // narration so the glyphs stay readable through the whole tie
+      // beat, then close.
+      await waitMs(PHASE_T_REVEAL + TIE_NARRATION_HOLD_MS);
+      this.scene.revealGlyphs?.hide();
       this.active = false;
       return;
     }
-
-    // Action round opener — `reveal` lands the moment RPS resolves so
-    // the player feels the round flip.
-    playSfx('reveal');
 
     // ── Action path ─────────────────────────────────────────────────────
     // Pull out actions + narrations. ACTION effects fire at PULL_PANTS
@@ -255,13 +286,20 @@ export class EffectPlayer {
       const approach = actorHomeX <= victimX ? -52 : 52;
       const rushTargetX = victimX + approach;
 
-      const atPullPants = action.atMs;            // 900
-      const atRushStart = atPullPants - PHASE_T_RUSH; // 300
-      const atStrike = atPullPants + PHASE_T_PULL_PANTS; // 1800
-      const atReturn = atStrike + 600 + 800;       // 3200 (STRIKE+IMPACT)
+      // After §H2, PHASE_OFFSETS values are shifted by PHASE_T_REVEAL=1500:
+      //   atPullPants = 2400, atRushStart = 1800, atStrike = 3300,
+      //   atReturn   = 4700, ROUND_TOTAL_MS = 5500.
+      const atPullPants = action.atMs;                    // 2400
+      const atRushStart = atPullPants - PHASE_T_RUSH;      // 1800
+      const atStrike = atPullPants + PHASE_T_PULL_PANTS;   // 3300
+      const atReturn = atStrike + 600 + 800;               // 4700 (STRIKE+IMPACT)
 
-      // PREP: anticipation crouch (atMs=0). Holds for PHASE_T_PREP=300.
-      scheduleAt(this.timers, t0, 0, () => {
+      // PREP: anticipation crouch. After §H2 the round opens with a
+      // REVEAL hold, so PREP starts at PHASE_T_REVEAL (1500ms), not
+      // t=0. Derived from the ACTION effect's canonical atMs anchor
+      // so a future timing.ts edit ripples through here automatically.
+      const atPrep = atRushStart - 300; // PHASE_T_PREP=300
+      scheduleAt(this.timers, t0, atPrep, () => {
         actor.setState('PREP');
       });
 
@@ -418,16 +456,17 @@ export class EffectPlayer {
         const cy = vp.height * 0.18;
         // 32 + 32 = ≥ 32 spec, two staggered bursts so confetti keeps
         // arriving as the first wave starts to fall.
-        scheduleAt(this.timers, t0, ACTION_TOTAL_MS - 600, () => {
+        scheduleAt(this.timers, t0, ROUND_TOTAL_MS - 600, () => {
           confetti.spawn(32, cx, cy);
         });
-        scheduleAt(this.timers, t0, ACTION_TOTAL_MS - 200, () => {
+        scheduleAt(this.timers, t0, ROUND_TOTAL_MS - 200, () => {
           confetti.spawn(32, cx, cy);
         });
       }
     }
 
-    await waitMs(ACTION_TOTAL_MS);
+    await waitMs(ROUND_TOTAL_MS);
+    this.scene.revealGlyphs?.hide();
     this.active = false;
   }
 }

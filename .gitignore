@@ -11,3 +11,6 @@ coverage/
 .turbo/
 .cache/
 .playwright-mcp/
+# Smoke-test screenshots dumped at the repo root by playwright drives —
+# kept out of the working tree so iteration churn doesn't bloat git.
+/*.png

@@ -33,6 +33,7 @@ import {
   ConfettiEmitter,
 } from './particles/index.js';
 import { Camera } from './camera/index.js';
+import { RevealGlyphs } from './RevealGlyphs.js';
 
 export interface StagePlayer {
   id: string;
@@ -84,6 +85,7 @@ interface SceneRefs {
   cloth: ClothEmitter;
   woodChips: WoodChipEmitter;
   confetti: ConfettiEmitter;
+  revealGlyphs: RevealGlyphs;
 }
 
 export function GameStage({ players, controllerRef, onReady }: GameStageProps): JSX.Element {
@@ -168,9 +170,20 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
         const cloth = new ClothEmitter();
         const woodChips = new WoodChipEmitter();
         const confetti = new ConfettiEmitter();
+        const revealGlyphs = new RevealGlyphs();
         gameplayLayer.addChild(dust.view);
         gameplayLayer.addChild(cloth.view);
         gameplayLayer.addChild(woodChips.view);
+        // Reveal glyphs sit on the gameplay layer above characters but
+        // below the foreground decor — same band as cloth/wood-chip
+        // particles so the glyph reads in front of the houses.
+        // Houses and characters are added to the gameplay layer later
+        // (in reconcile cycles) and would render on top by virtue of
+        // child order; opt into Pixi's sortableChildren so the badge
+        // overlay is forced to the front via zIndex.
+        gameplayLayer.sortableChildren = true;
+        revealGlyphs.view.zIndex = 100;
+        gameplayLayer.addChild(revealGlyphs.view);
         fgLayer.addChild(confetti.view);
 
         // Camera owns translate/scale of all four parallax layers.
@@ -202,6 +215,20 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
           woodChips,
           confetti,
           camera,
+          revealGlyphs: {
+            show: (throws) => {
+              revealGlyphs.show(throws, (id) => {
+                const ch = characters.get(id);
+                const hx = homeX.get(id);
+                if (!ch || hx === undefined) return undefined;
+                // Use the character's absolute scale (positive value)
+                // — view.scale.x is signed by facing, view.scale.y is
+                // always positive and matches the §C9 layout scale.
+                return { x: hx, y: ch.view.y, scale: ch.view.scale.y };
+              });
+            },
+            hide: () => revealGlyphs.hide(),
+          },
           getViewportSize: () => ({
             width: app.screen.width,
             height: app.screen.height,
@@ -225,6 +252,7 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
           cloth,
           woodChips,
           confetti,
+          revealGlyphs,
           camera,
           resizeObserver: new ResizeObserver(() => {
             const ww = Math.max(1, host.clientWidth);
@@ -327,6 +355,7 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
           refs.cloth.destroy();
           refs.woodChips.destroy();
           refs.confetti.destroy();
+          refs.revealGlyphs.destroy();
         } catch {
           /* noop */
         }
