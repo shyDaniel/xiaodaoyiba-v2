@@ -73,6 +73,14 @@ interface SceneRefs {
   mountainLayer: Container;
   gameplayLayer: Container;
   fgLayer: Container;
+  /** §H1 (S-440) — plaque overlay layer added AFTER fgLayer to
+   *  app.stage so the foreground lantern sprites paint BEHIND the
+   *  nameplates. Otherwise lanterns at canvas corners (Foreground.ts
+   *  positions them at (60, 18) / (w-60, 18), body half-width ≈ 26 px)
+   *  visually obscure the leftmost/rightmost back-row plaques —
+   *  observed live as '玩家61' rendering as '家61' on desktop and
+   *  '家' on 6p × 375 mobile. */
+  plaqueLayer: Container;
   houses: Map<string, House>;
   characters: Map<string, Character>;
   /** Home x for each character — the spot the character idles at and
@@ -142,10 +150,16 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
         const mountainLayer = new Container();
         const gameplayLayer = new Container();
         const fgLayer = new Container();
+        // §H1 (S-440) — plaqueLayer is the topmost stage layer so
+        // nameplates paint above the foreground lantern sprites.
+        // Without this, lanterns hanging at canvas corners obscure
+        // the outermost back-row plaques on every viewport.
+        const plaqueLayer = new Container();
         app.stage.addChild(bgLayer);
         app.stage.addChild(mountainLayer);
         app.stage.addChild(gameplayLayer);
         app.stage.addChild(fgLayer);
+        app.stage.addChild(plaqueLayer);
 
         const bg = new Background({ width: w, height: h });
         const mountains = new Mountains(w, h);
@@ -203,6 +217,10 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
         camera.addLayer({ container: mountainLayer, parallax: 0.3, zooms: false, anchorX: cx, anchorY: cy });
         camera.addLayer({ container: gameplayLayer, parallax: 1.0, anchorX: cx, anchorY: cy });
         camera.addLayer({ container: fgLayer, parallax: 1.3, anchorX: cx, anchorY: cy });
+        // §H1 (S-440) plaqueLayer follows the gameplay layer's
+        // parallax + zoom so nameplates track their houses through
+        // camera shake / PULL_PANTS zoom.
+        camera.addLayer({ container: plaqueLayer, parallax: 1.0, anchorX: cx, anchorY: cy });
 
         // EffectPlayer reads the live characters/homeX maps via these
         // closures — so it always sees the current scene, even after
@@ -245,6 +263,7 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
           mountainLayer,
           gameplayLayer,
           fgLayer,
+          plaqueLayer,
           houses,
           characters,
           homeX,
@@ -430,7 +449,7 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
           refs.homeX.delete(id);
         }
         if (h) {
-          // §H1 (S-437): plaque was re-parented into gameplayLayer in
+          // §H1 (S-440): plaque was re-parented into plaqueLayer in
           // layoutPlayers — remove + destroy it explicitly so a
           // departing player's nameplate doesn't linger on the scene.
           if (h.plaque.parent) h.plaque.parent.removeChild(h.plaque);
@@ -571,21 +590,24 @@ function layoutPlayers(refs: SceneRefs): void {
       house.view.position.set(spot.houseX, spot.houseY);
       house.view.scale.set(spot.scale, spot.scale);
       house.view.zIndex = rowBase;
-      // §H1 (S-437) plaque overlay: re-parent the plaque from
-      // house.view into gameplayLayer with zIndex=5000 so it always
-      // paints above EVERY house row. Otherwise back-row plaques
-      // (rowBase=0) get occluded by front-row roofs (rowBase=1000) —
-      // the iter-58 visual regression where the back-row plaques
-      // 'disappeared' behind the closer houses. The plaque is
-      // rendered in the house's pre-scale local space, so we mirror
-      // house.view.position/scale onto the plaque before it joins
-      // gameplayLayer so the ribbon lands centered over the house.
-      if (house.plaque.parent !== refs.gameplayLayer) {
-        refs.gameplayLayer.addChild(house.plaque);
+      // §H1 (S-440) plaque overlay: re-parent the plaque into the
+      // dedicated `plaqueLayer` (added AFTER fgLayer to app.stage)
+      // so plaques paint above EVERY house row AND above the
+      // foreground lantern sprites. Previously plaques lived in
+      // gameplayLayer with zIndex=5000 — that worked for inter-row
+      // ordering but the foreground lantern sprites in fgLayer
+      // (which paints after gameplayLayer) still occluded the
+      // outermost plaques against canvas-edge corners (verdict
+      // iter-63: '玩家61' rendered as '家61' on desktop and '家'
+      // on 6p × 375 mobile). The plaque is rendered in the house's
+      // pre-scale local space, so we mirror house.view.position/
+      // scale onto the plaque before it joins plaqueLayer so the
+      // ribbon lands centered over the house.
+      if (house.plaque.parent !== refs.plaqueLayer) {
+        refs.plaqueLayer.addChild(house.plaque);
       }
       house.plaque.position.set(spot.houseX, spot.houseY);
       house.plaque.scale.set(spot.scale, spot.scale);
-      house.plaque.zIndex = 5000;
     }
     if (ch) {
       // Snap home position only when the character is currently at a
@@ -983,22 +1005,29 @@ export function computeSpots(
     }
   }
 
-  // §H1 (S-439) — canvas-edge clamp for the OUTERMOST station(s) in
+  // §H1 (S-440) — canvas-edge clamp for the OUTERMOST station(s) in
   // each row. Even though slotBandX0 + slotW*(slotIdx+0.5) places
   // every station inside the slot band, the plaque ribbon is centered
   // on cx with canvas-space half-width = stationW*0.95/2; AND Pixi's
   // TextStyle.padding=8 widens the rasterized text texture by ~8 px
-  // on each side beyond the ribbon. On 6p × 375 mobile the math
-  // *just barely* keeps the ribbon inside the canvas — but the
-  // bold-700 PingFang fallback rasterized texture overshoots the
-  // ribbon graphics rectangle and visibly clips against the canvas
-  // edge ('玩家19' → '玩' on slot 0; 'counter#2' → 'r#2' on slot 5
-  // per iter-60 verdict). Defense in depth: clamp every spot's cx so
-  // the plaque ribbon (with a generous +PLAQUE_TEXT_PAD allowance for
-  // Pixi rasterization texture overshoot) lies entirely inside the
-  // canvas. Slots whose cx is pushed inward have their stationW
-  // tightened by the same amount so adjacent plaques never overlap.
-  const PLAQUE_TEXT_PAD = 10; // Pixi rasterization texture pad allowance
+  // on each side beyond the ribbon.
+  //
+  // S-440: PLAQUE_TEXT_PAD bumped 10 → 20 to absorb the worst-case
+  // bold-700 PingFang-fallback rasterization overshoot observed live
+  // on 'counter#2' (~14-18 px past the ribbon edge per iter-63
+  // verdict — the texture canvas widens beyond the ribbon graphics
+  // rectangle on first paint before the @font-face PingFang loads).
+  // Combined with House.draw's font-floor lowered from 5 → 4 in
+  // S-440, this guarantees the rasterized 'counter#2' texture fits
+  // entirely inside the canvas±4 acceptance band even on a 60-px
+  // 6p × 375 slot. The lantern-overlap concern from the S-440 brief
+  // is addressed independently by promoting the plaque overlay to a
+  // dedicated `plaqueLayer` added AFTER fgLayer to app.stage (see
+  // GameStage init), so the foreground lantern sprites paint BEHIND
+  // the plaques rather than above them. That eliminates the need
+  // for a lantern-safe-zone cx-clamp (which would have left no
+  // usable band for 6 slots on a 375-px canvas).
+  const PLAQUE_TEXT_PAD = 20; // S-440: bumped 10 → 20 for bold-fallback rasterization overshoot
   const edgeMargin = 4; // §H1 acceptance: plaque.left ≥ 4, plaque.right ≤ w-4
   const clampSlot = (cx: number, stW: number): { cx: number; stationW: number } => {
     const plaqueHalf = (stW * 0.95) / 2 + PLAQUE_TEXT_PAD;

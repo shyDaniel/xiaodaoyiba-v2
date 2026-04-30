@@ -195,15 +195,17 @@ describe('§H1 mobile + desktop layout: no clipping for 2..6 players × {1280×8
       test(`${vp.tag} ${n} players: stationW fits inside canvas`, () => {
         const spots = computeSpots(n, vp.w, pTop, pBottom);
         for (const s of spots) {
-          // Floor of 40 — at 6p × 375-mobile, the §H1 (S-439) canvas-edge
-          // clamp pushes the outermost slot inward and tightens its
-          // stationW to ~44 px on the no-chrome (chrome=0) test viewport.
-          // The brief explicitly accepts this tradeoff: a tighter slot
-          // hosting 'counter#2' at fontSize=5 (which fits in ~28 px at
-          // bold-700 PingFang) is preferable to a plaque ribbon
-          // extending past the canvas edge. Live mobile (chrome=4)
-          // gives stationW ≈ 51 px, well above this floor.
-          expect(s.stationW, `stationW for ${vp.tag} n=${n}`).toBeGreaterThan(40);
+          // Floor of 40 — at 6p × 375-mobile, the §H1 (S-440) canvas-edge
+          // clamp with PLAQUE_TEXT_PAD bumped 10 → 20 (to absorb bold-
+          // fallback rasterization overshoot) pushes the outermost slot
+          // inward harder and tightens its stationW down to the 40-px
+          // hard floor on the no-chrome (chrome=0) test viewport. The
+          // brief explicitly accepts this tradeoff: a tighter slot
+          // hosting 'counter#2' at fontSize=4 (which fits in ~25 px at
+          // bold-700 PingFang) is preferable to a rasterized plaque
+          // texture extending past the canvas edge. Live mobile
+          // (chrome=4) is slightly more generous.
+          expect(s.stationW, `stationW for ${vp.tag} n=${n}`).toBeGreaterThanOrEqual(40);
           // The station box is centered on houseX with stationW
           // canvas-units of horizontal budget. It must not exceed the
           // canvas edges (with a 1 px tolerance).

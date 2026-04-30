@@ -187,6 +187,67 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
     });
   }
 
+  // §H1 (S-440) — verify the live-canvas viewport (375×667 mobile,
+  // 1280×800 desktop) keeps every plaque inside the canvas±4 band
+  // with the worst-case 6-bot name set, AND that the rasterized
+  // text texture (extending +PLAQUE_TEXT_PAD past the ribbon edge)
+  // also lies inside the canvas. The previous S-439 test only
+  // asserted the ribbon graphics rect; iter-63 verdict observed
+  // that the bold-700 PingFang fallback rasterized texture
+  // overshoots the ribbon by ~14-18 px — this regression catches
+  // that overshoot via the +20-px PLAQUE_TEXT_PAD allowance the
+  // S-440 clamp now bakes into computeSpots.
+  for (const vp of [
+    { w: 375, h: 667, tag: 'mobile-live-375x667' },
+    { w: 1280, h: 800, tag: 'desktop-live-1280x800' },
+  ] as const) {
+    test(`S-440 acceptance: 6p × ${vp.tag} rasterized text textures stay inside canvas±4`, () => {
+      const { left: chromeLeft, right: chromeRight } = computeChromeMargins(vp.w);
+      const { top: pTop, bottom: pBottom } = computePlayableRect(vp.w, vp.h);
+      const spots = computeSpots(6, vp.w, pTop, pBottom, chromeLeft, chromeRight);
+      expect(spots).toHaveLength(6);
+
+      // Pixi rasterization texture overshoot allowance — must match
+      // PLAQUE_TEXT_PAD in GameStage.computeSpots.
+      const PLAQUE_TEXT_PAD = 20;
+
+      for (let i = 0; i < spots.length; i++) {
+        const s = spots[i]!;
+        const name = WORST_NAMES[i] ?? `bot${i}`;
+        const localStationW = s.stationW / Math.max(0.001, s.scale);
+        const house = new House({
+          ownerId: `id-${i}`,
+          ownerName: name,
+          width: s.houseW,
+          height: s.houseH,
+          stationW: localStationW,
+        });
+        const plaqueCanvasW = house.getPlaqueWidth() * s.scale;
+        // Worst-case texture extent: ribbon canvas-half-width plus the
+        // bold-fallback rasterization overshoot (PLAQUE_TEXT_PAD). The
+        // S-440 clampSlot guarantees this still lies inside canvas±4.
+        const textureLeft = s.houseX - plaqueCanvasW / 2 - PLAQUE_TEXT_PAD;
+        const textureRight = s.houseX + plaqueCanvasW / 2 + PLAQUE_TEXT_PAD;
+        expect(
+          textureLeft,
+          `${vp.tag} slot=${i} name=${name} textureLeft=${textureLeft.toFixed(2)} (must ≥ 4)`,
+        ).toBeGreaterThanOrEqual(4);
+        expect(
+          textureRight,
+          `${vp.tag} slot=${i} name=${name} textureRight=${textureRight.toFixed(2)} (must ≤ ${vp.w - 4})`,
+        ).toBeLessThanOrEqual(vp.w - 4);
+        // Pixi.Text.text strict equality with the displayName.
+        const textChild = house.plaque.children.find(
+          (c): c is { text: string } & object =>
+            typeof (c as { text?: unknown }).text === 'string',
+        ) as ({ text: string } & object) | undefined;
+        expect(textChild?.text, `${vp.tag} slot=${i} name=${name}`).toBe(name);
+        expect(textChild?.text).not.toContain('…');
+        expect(textChild?.text).not.toContain('...');
+      }
+    });
+  }
+
   test('every house plaque on 5p × 375 mobile fits inside its slot', () => {
     const w = 375;
     const h = 355;

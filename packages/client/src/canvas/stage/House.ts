@@ -380,20 +380,24 @@ export class House {
         : Number.POSITIVE_INFINITY;
     const cap = Math.min(stationCap, Math.max(200, w * 0.78 + 64));
 
-    // Shrink loop: pick the largest fontSize ∈ [5, 16] whose
+    // Shrink loop: pick the largest fontSize ∈ [4, 16] whose
     // padded ribbon (renderedW + 16 px outer padding) fits inside
     // `cap`. The renderedW formula below adds +24 to measuredW, plus
     // an additional 2 * 8 = 16 px ribbon padding from `padPerSide`
     // below — total 40 px of safety pad over the raw advance.
-    // §H1 (S-437): floor lowered from 7 → 5 so worst-case 6p × 375
-    // mobile ('counter#2' in a 55-px slot cap) can shrink the text
-    // enough to fit inside the slot rather than overflow past the
-    // canvas right edge. 5 px is still legible at 1× device-pixel-
-    // ratio on mobile (the plaque is the size of a thumbnail).
+    // §H1 (S-440): floor lowered from 5 → 4 so the worst-case 6p ×
+    // 375 mobile slot ('counter#2' in a ~30-px clamped slot cap
+    // after the lantern-safe-zone push from S-440 computeSpots
+    // clampSlot) can still fit a single-line 'counter#2' if the
+    // shrink loop reaches floor — preferable to letting Pixi
+    // wrap-and-clip past the slot. 4 px is still legible at 1×
+    // device-pixel-ratio on mobile when paired with the +20-px
+    // PLAQUE_TEXT_PAD (S-440) which absorbs bold-fallback
+    // rasterization overshoot.
     let fontSize = 16;
     while (
       Math.ceil(measurePixiTextW(namePool, fontSize)) + 24 + 16 > cap &&
-      fontSize > 5
+      fontSize > 4
     ) {
       fontSize -= 1;
     }

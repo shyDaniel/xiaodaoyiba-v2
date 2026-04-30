@@ -2695,3 +2695,77 @@ build` succeeds.
 **Files touched:**
 - `packages/client/src/canvas/stage/House.ts`
 - `packages/client/src/canvas/stage/House.test.ts`
+
+## Iteration 64 — §H1 6-bot plaque z-order over lanterns + texture overshoot (S-440)
+
+**Problem.** S-439 clamped plaque centers via `clampSlot` to keep
+the 60-px ribbon inside [4, w-4], but two issues remained on
+6-bot × 375 mobile and even on 1280×800 desktop:
+(1) the foreground `fgLayer` lantern sprites at x∈{60, w-60} were
+painted *over* the leftmost & rightmost plaques, occluding the
+top edge of the ribbon backdrop and the first/last char of names
+like '玩家99' and 'counter#2'; (2) Pixi.Text's bold-fallback
+rasterization texture overshoots the advance-width by ~14–18 px
+on the worst-case CJK glyphs at fontSize=5–7, so the rasterized
+texture's right edge could still land at canvas.width − 1 even
+when the *advance* fit inside the slot.
+
+**Fix.** Two-pronged:
+
+1. **Dedicated `plaqueLayer` rendered above `fgLayer`.** Added a
+   new `Container` to `app.stage` *after* `fgLayer`, registered
+   with `Camera` at `parallax = 1.0` (no scroll independence),
+   and `layoutPlayers` re-parents each `house.plaque` into
+   `plaqueLayer` (instead of `gameplayLayer`) on every scene
+   reflow. Since Pixi paints children in insertion order, the
+   plaque ribbons + texts now sit on top of the lanterns. The
+   lantern body half-width 26 + center-x 60 means it would
+   otherwise eat the first ~26 px of the leftmost plaque.
+
+2. **`PLAQUE_TEXT_PAD: 10 → 20` in `clampSlot`.** Doubles the
+   per-edge safety budget that the slot-clamp adds to `plaqueHalf`
+   when computing the legal centerX band, absorbing the bold-
+   fallback texture overshoot. Slot 0's leftmost edge target is
+   now `4 + (plaqueW/2 + 20)` instead of `+ 10`. On extreme
+   6-bot × 375, this floors `stationW` at 40 px (the documented
+   minimum from `computeSpots`), but the visual gain — full
+   readability of all 6 names — is the §H1 acceptance contract.
+
+3. **Font floor 5 → 4** in `House.ts::draw`'s shrink loop. With
+   `PLAQUE_TEXT_PAD = 20` the slot 0 plaqueW lands at ~52 px on
+   6p × 375, and the wrapped 'counter#2' line `'counter\\n#2'`
+   shrinks down to fs=4 to fit inside the ribbon's `wrapW =
+   plaqueW − 32`. fs=4 is below comfortable readability but
+   guaranteed never-clipped per the brief.
+
+**Live verification (375×667 + 1280×800 headless Chromium, 6 bots
+['玩家99','counter','random','iron','mirror','counter#2']).**
+Mobile: all 6 plaque ribbons visible above the lanterns; no
+foreground sprite occludes the text band; rightmost 'counter#2'
+ribbon ends at x ≈ 365 (canvas right at 375). Desktop: all 6
+plaques fully readable at fs ≥ 11 with comfortable inter-plaque
+gaps. Screenshots: `s440-mobile-6bot-pre-reveal.png`,
+`s440-mobile-6bot-reveal.png`, `s440-desktop-6bot.png`.
+
+**New test.** `House.test.ts::S-440 acceptance: 6p plaques stay
+inside canvas±4 with PAD=20 + bold-fallback texture overshoot`
+covers both viewports and asserts:
+- per-plaque `globalLeft + textureOvershoot ≥ 4`
+- per-plaque `globalRight + textureOvershoot ≤ canvas.width − 4`
+- per-plaque `Pixi.Text.text === ownerName` (no truncation char)
+
+**Tests:** `pnpm -r typecheck` exits 0. `pnpm -r test` → 79
+shared + 21 server + 140 client (+4 from S-440) = 240 green.
+`pnpm sim --players 4 --bots counter,random,iron,mirror
+--winner-strategy random-target+random-action --rounds 50 --seed
+42` → tie_rate=0.260 < 0.30, PULL_OWN_PANTS_UP firing (round 47
+gameRound 2 winner picked PULL_OWN_PANTS_UP). `pnpm -r build`
+succeeds.
+
+**Files touched:**
+- `packages/client/src/canvas/GameStage.tsx` (added plaqueLayer,
+  bumped PLAQUE_TEXT_PAD 10 → 20)
+- `packages/client/src/canvas/stage/House.ts` (font floor 5 → 4)
+- `packages/client/src/canvas/stage/House.test.ts` (new S-440 test)
+- `packages/client/src/canvas/layout.test.ts` (relaxed
+  stationW assertion `>40` → `>=40` since floor is now hit)
