@@ -29,6 +29,7 @@ import { TargetPicker, type TargetCandidate } from '../components/TargetPicker.j
 import { ActionPicker } from '../components/ActionPicker.js';
 import {
   BattleLog,
+  formatActionRow,
   type LogEntry,
   type LogVerb,
   useIsMobile,
@@ -196,17 +197,29 @@ export function MultiGamePage(): JSX.Element {
             : [actorP, targetP]
                 .filter((p): p is PlayerState => Boolean(p))
                 .map((p) => `${p.nickname}|${p.id}`);
-          const phaseTag = isTie
-            ? 'tie'
-            : entry.verb === '砍'
-            ? 'chop'
-            : 'pull_pants';
+          // FINAL_GOAL §H7: structured action row. Tie phases keep
+          // their colloquial line as-is; action phases (扒/砍/穿)
+          // emit `R{N}.action  X → Y 扒裤衩|咔嚓|穿好裤衩 ✓ ·
+          // {colloquial}` so /R\d+\.action.+(扒裤衩|咔嚓|穿好裤衩).+✓/
+          // matches against innerText. Same shape as solo Game.tsx.
+          const phaseTag = isTie ? 'tie' : 'action';
+          const text = isTie
+            ? entry.text
+            : formatActionRow({
+                round: head.round,
+                verb: entry.verb,
+                actorNickname: actorP?.nickname ?? entry.actor ?? '？',
+                targetNickname: targetP?.nickname ?? entry.target ?? '？',
+                actorId: entry.actor,
+                targetId: entry.target,
+                colloquial: entry.text,
+              });
           appendLog(
             {
               round: head.round,
               phase: phaseTag,
               verb: entry.verb as LogVerb,
-              text: entry.text,
+              text,
               actors,
             },
             setLogEntries,

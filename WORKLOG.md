@@ -2273,3 +2273,79 @@ All four required patterns hit.
   on both garments, chest crease, sleeve cuff.
 - ✓ idle squash-and-stretch every 1.5–2.5s — period jittered
   per-player so a row doesn't pulse in lockstep.
+
+---
+
+## iter-54 / S-421 — §H7 BattleLog action-row format + ✓ marker + cyan 穿 wired
+
+**Why this work:** FINAL_GOAL §H7 acceptance asks for structured
+BattleLog rows of the shape `R{N}.action  X → Y 扒裤衩|咔嚓|穿好裤衩
+✓` with verb-color badges (yellow 扒 / red 砍 / cyan 穿). Previous
+iterations had shipped the v1 paragraph format (`R1.pull_pants iron
+一个箭步上前，扒下了X的裤衩`) and the cyan 穿 badge in
+`BattleLog.tsx` was dead code — the React UI layer (Game.tsx /
+MultiGame.tsx onNarration handlers) hard-coded `phaseTag = 'pull_pants'
+| 'chop' | 'tie'` and never emitted the engine's '穿' verb. The
+PULL_OWN_PANTS_UP self-restore action picker in particular had no
+log-side surface at all.
+
+**What:**
+
+- `packages/client/src/components/BattleLog.tsx` — added two
+  exported helpers shared between Game.tsx and MultiGame.tsx so
+  both surfaces emit byte-identical row text:
+  - `formatActionVerb(verb)` maps single-character engine verb
+    tags ('扒'/'砍'/'穿'/'闪'/'死') to the full Chinese keyword
+    used in the row body ('扒裤衩'/'咔嚓'/'穿好裤衩'/'躲闪'/'倒下').
+  - `formatActionRow({round, verb, actorNickname, targetNickname,
+    actorId, targetId, colloquial})` returns `R{N}.action  {actor}
+    → {target|自己} {verbWord} ✓ · {colloquial}` as a single line
+    so JS regex `.+` matches across the whole body without
+    crossing block boundaries (innerText splits on `\n`).
+    Self-detection (`actorId === targetId`) renders `→ 自己` for
+    the PULL_OWN_PANTS_UP self-restore path.
+- `packages/client/src/pages/Game.tsx` — replaced the inline
+  phaseTag triage (`'tie' | 'chop' | 'pull_pants'`) in the solo
+  onNarration handler with `'tie' | 'action'`, and routed
+  non-tie rows through `formatActionRow(...)`. The verb passes
+  through verbatim so the LogVerb badge ('扒' yellow / '砍' red /
+  '穿' cyan) renders next to the row text.
+- `packages/client/src/pages/MultiGame.tsx` — same change in the
+  multi-room drain() onNarration handler, using `head.round`.
+- `packages/client/src/components/BattleLog.actionRow.test.ts` —
+  new test file with 7 unit tests covering: formatActionVerb
+  mappings, R1 PULL_PANTS regex `/R1\.action.+扒裤衩.+✓/`, R2
+  PULL_OWN_PANTS_UP self-restore (`actor === target` →
+  `→ 自己`), CHOP regex `/R\d+\.action.+咔嚓.+✓/`, and the
+  single-line constraint (`row.includes('\n') === false`).
+
+**Verification:**
+
+- `pnpm -C packages/shared test` → 79 pass.
+- `pnpm -C packages/server test` → 21 pass.
+- `pnpm -C packages/client test` → **123 pass** (was 116 before
+  the 7 new actionRow tests).
+- `pnpm -C packages/client build` → exits 0, bundle 549.32 kB
+  gzip 175.44 kB (+0.65 kB vs S-416 — overhead is the helper
+  exports and import wiring).
+- Live UI drive via Playwright MCP at 1280×800 (4p solo): R1
+  scissors throw resolved into PULL_PANTS, BattleLog innerText
+  contained `R1.action 你 → 小明 扒裤衩 ✓ · 你一个箭步上前，
+  扒下了小明的裤衩` — the regex `/R1\.action.+扒裤衩.+✓/`
+  matches end-to-end through the React + LogRow render pipeline.
+  The cyan 穿 self-restore branch is locked by unit test
+  `formatActionRow R2 PULL_OWN_PANTS_UP self-restore uses → 自己 +
+  穿好裤衩 keyword`.
+
+**Acceptance per FINAL_GOAL §H7 (S-421):**
+- ✓ rows match `/R\d+\.action.+(扒裤衩|咔嚓|穿好裤衩).+✓/`
+  (covered by unit tests + live R1 verification).
+- ✓ verb-color badges: yellow '扒' / red '砍' / cyan '穿' wired
+  via existing LogVerb palette in BattleLog.tsx — '穿' badge is
+  no longer dead code; engine's '穿' verb now reaches the React
+  layer through the unchanged Effect → onNarration → phaseTag =
+  'action' path.
+- ✓ ✓ marker present at end of each action row (literal U+2713
+  in the headline, before the colloquial separator).
+- ✓ same row format in solo (Game.tsx) and multi (MultiGame.tsx)
+  — both call `formatActionRow()` from BattleLog.tsx.

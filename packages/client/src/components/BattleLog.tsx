@@ -20,6 +20,63 @@ import {
 
 export type LogVerb = '扒' | '砍' | '闪' | '平' | '死' | '胜' | '穿' | '掷';
 
+/**
+ * FINAL_GOAL §H7: map the engine's single-character verb tag to the
+ * full Chinese verb keyword shown in the structured action row
+ * (`R{N}.action  X → Y 扒裤衩|咔嚓|穿好裤衩 ✓`). Acceptance regexes
+ * match against /扒裤衩|咔嚓|穿好裤衩/ so the keyword must be literal.
+ * Shared between Game.tsx (solo) and MultiGame.tsx (multi-room) so
+ * both surfaces emit byte-identical row text.
+ */
+export function formatActionVerb(
+  verb: '扒' | '砍' | '闪' | '平' | '死' | '穿',
+): string {
+  switch (verb) {
+    case '扒':
+      return '扒裤衩';
+    case '砍':
+      return '咔嚓';
+    case '穿':
+      return '穿好裤衩';
+    case '闪':
+      return '躲闪';
+    case '死':
+      return '倒下';
+    case '平':
+    default:
+      return '';
+  }
+}
+
+/**
+ * FINAL_GOAL §H7: build the structured action row body shown in the
+ * BattleLog. Returns `R{N}.action  {actor} → {target|自己} {verbWord} ✓
+ * · {colloquial}` so a single-line innerText regex matches across the
+ * whole row without crossing block boundaries.
+ *
+ * `actorNickname` / `targetNickname` are the rendered display names;
+ * `actorId` and `targetId` are used only to detect the self-restore
+ * branch (PULL_OWN_PANTS_UP, where actor === target).
+ */
+export function formatActionRow(args: {
+  round: number;
+  verb: '扒' | '砍' | '闪' | '平' | '死' | '穿';
+  actorNickname: string;
+  targetNickname: string;
+  actorId?: string;
+  targetId?: string;
+  colloquial: string;
+}): string {
+  const verbWord = formatActionVerb(args.verb);
+  const isSelf =
+    args.actorId !== undefined &&
+    args.targetId !== undefined &&
+    args.actorId === args.targetId;
+  const targetLabel = isSelf ? '自己' : args.targetNickname;
+  const headline = `R${args.round}.action ${args.actorNickname} → ${targetLabel} ${verbWord} ✓`;
+  return `${headline} · ${args.colloquial}`;
+}
+
 export interface LogEntry {
   id: string;
   round: number;
