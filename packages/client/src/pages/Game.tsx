@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  PHASE_T_REVEAL,
   resolveRound,
   type Effect,
   type PlayerState,
@@ -44,6 +45,16 @@ interface BotProfile {
 
 const SHAPES: RpsChoice[] = ['ROCK', 'PAPER', 'SCISSORS'];
 
+/** Glyphs for the BattleLog `R{N}.rps throws=[…]` row (FINAL_GOAL §H2).
+ *  We use the canonical fist/palm/V emoji per spec rather than the in-canvas
+ *  drawn shapes — log rendering uses system fonts, where these glyphs are
+ *  universally supported. */
+const CHOICE_GLYPH: Record<RpsChoice, string> = {
+  ROCK: '✊',
+  PAPER: '✋',
+  SCISSORS: '✌',
+};
+
 function pickRandom(): RpsChoice {
   const i = Math.floor(Math.random() * 3);
   return SHAPES[i] ?? 'ROCK';
@@ -69,6 +80,10 @@ const PHASE_INFOS: Record<string, PhaseInfo> = {
   IDLE: { label: '出拳', hint: '点击下方按钮选择石头/剪刀/布' },
   WAIT: { label: '等待', hint: '机器人正在出拳…' },
   RESOLVE: { label: '判定', hint: '比较出拳结果' },
+  // FINAL_GOAL §H2: REVEAL hold during which every alive player's throw
+  // is shown as a glyph above their station. Pill reads "RPS" so a
+  // first-time viewer knows the action timeline has not started yet.
+  RPS: { label: 'RPS', hint: '同时亮拳！' },
   ACTION: { label: '动作', hint: '冲到对方家里！' },
   TIE: { label: '平局', hint: '再来一次！' },
   OVER: { label: '终局', hint: '游戏结束' },
@@ -181,9 +196,55 @@ export function GamePage({ onExit }: { onExit?: () => void } = {}): JSX.Element 
       // Resolve via shared engine
       const result = resolveRound(playerStates, round, { choices });
 
-      // Phase: TIE or ACTION
+      // Phase progression: RPS (reveal hold) → TIE/ACTION (action sub-segment).
+      // FINAL_GOAL §H2 requires the pill to read "RPS" while every alive
+      // player's throw glyph is on screen, BEFORE the action timeline
+      // starts. We flip to TIE/ACTION at the PHASE_T_REVEAL boundary
+      // (the same beat EffectPlayer hides the glyphs).
       const isTie = result.rps.tie;
-      setPhase(isTie ? 'TIE' : 'ACTION');
+      setPhase('RPS');
+
+      // Emit the R{N}.rps row immediately so it precedes any action row.
+      // Format mirrors FINAL_GOAL §H2 spec
+      // (`R{N}.rps  throws=[…]  winners=[…]`).
+      const reveal = result.effects.find(
+        (e): e is Extract<Effect, { type: 'RPS_REVEAL' }> =>
+          e.type === 'RPS_REVEAL',
+      );
+      if (reveal) {
+        const throwsText = reveal.throws
+          .map((t) => CHOICE_GLYPH[t.choice])
+          .join('');
+        const winningChoice = result.rps.winningChoice;
+        const winnersText =
+          result.rps.tie || !winningChoice
+            ? '平'
+            : `${CHOICE_GLYPH[winningChoice]}×${result.rps.winners.length}`;
+        const actorIds = reveal.throws.map((t) => {
+          const p = playerStates.find((pp) => pp.id === t.playerId);
+          return p ? `${p.nickname}|${p.id}` : t.playerId;
+        });
+        appendLog(
+          {
+            round,
+            phase: 'rps',
+            verb: '掷',
+            text: `throws=[${throwsText}] winners=[${winnersText}]`,
+            actors: actorIds,
+          },
+          setLogEntries,
+        );
+      }
+
+      // Defer the TIE/ACTION pill flip until the reveal hold ends. We
+      // don't await here — stage.play() blocks for the full ROUND_TOTAL_MS
+      // already, so the timeout fires inside that wait. The setTimeout id
+      // is fire-and-forget: cancellation isn't needed because stage.play()
+      // owns the await and the host component remounting (e.g. on `restart`)
+      // triggers a fresh render that supersedes this pill state.
+      window.setTimeout(() => {
+        setPhase(isTie ? 'TIE' : 'ACTION');
+      }, PHASE_T_REVEAL);
 
       // Delegate the entire round timeline to the canvas EffectPlayer.
       // BattleLog rows are appended via the onNarration callback so each

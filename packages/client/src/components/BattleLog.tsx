@@ -13,7 +13,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { toCss, palette, playerColor } from '../palette.js';
 
-export type LogVerb = '扒' | '砍' | '闪' | '平' | '死' | '胜' | '穿';
+export type LogVerb = '扒' | '砍' | '闪' | '平' | '死' | '胜' | '穿' | '掷';
 
 export interface LogEntry {
   id: string;
@@ -38,6 +38,9 @@ const VERB_COLOR: Record<LogVerb, number> = {
   // red and the pull gold so the log reads "winner clothed themselves
   // back" at a glance.
   穿: 0x38c8d8,
+  // FINAL_GOAL §H2: simultaneous-throw (REVEAL phase) row — neutral
+  // slate so it reads as a "scoreboard" row distinct from action verbs.
+  掷: 0x9aa3b2,
 };
 
 export interface BattleLogProps {
