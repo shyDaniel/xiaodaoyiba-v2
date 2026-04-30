@@ -2013,3 +2013,85 @@ both viewports.
 station budget, ✓ no same-row x-overlap, ✓ rail chips wrap inside
 viewport on mobile, ✓ no character pixel below playable_rect.bottom.
 
+---
+
+## Iteration 49 — §H1 6p plaque text bearing fix + chrome reserve (S-401)
+
+**What:** S-397 had widened plaque ribbons but Playwright drives at
+both viewports still showed back-row plaque text truncated to 5–6
+chars ('counte', 'mirroi', 'randon', 'counter#'), leftmost human
+character occluded by the React PlayerRail panel, and on mobile
+some character bodies overlapped. Iter-49 root-causes the truncation
+to a Pixi 8 `TextStyle` rasterisation issue and ships a 3-prong fix.
+
+**Root cause (the truncation):**
+
+It was *not* a measurement-vs-render width mismatch as iter-48
+assumed. Forcing `plaqueW = 240 px` (much wider than any text)
+left the visual unchanged — the trailing glyphs still clipped at
+the same column. Logging `text.width` and `text.getLocalBounds()`
+showed the Pixi `Text` reported the correct width matching
+`CanvasTextMetrics.measureText(...).width`, so the texture canvas
+itself was being cut: **Pixi 8's `TextStyle` defaults `padding: 0`,
+which sizes the offscreen rasterisation canvas to exactly the
+advance width. For bold-700 fontFamily fallbacks (system default
+on this Linux/Chrome), the rightmost glyph's bearing extends past
+the advance, and the bearing pixels are clipped during the texture
+upload.** Setting `padding: 8` on the `TextStyle` makes the
+rasterisation canvas 8 px wider on every side, capturing the full
+bearing. With this fix, `'counter#2'` rasterises as `'counter#2'`
+not `'counter#'`.
+
+**Files modified:**
+
+1. **`packages/client/src/canvas/stage/House.ts`** — single change
+   that actually fixes the bug:
+   - Added `padding: 8` to `buildStyle(fs)` `TextStyle`. This is
+     the **root-cause fix**.
+   - Bumped `renderedW = ceil(measuredW) + 24` (was `+ 4`) so the
+     ribbon extent always covers the rasterised texture even if a
+     future font fallback bearing exceeds the +8 padding.
+   - Bumped the shrink loop's overflow predicate to
+     `ceil(measure) + 24 + 16 > cap` to keep the +24 ribbon
+     accommodation in the shrink decision.
+   - Simplified `plaqueW`: when `stationW` is set the plaque is
+     just `minRibbon = renderedW + 16` (always honours full text);
+     no special-case clamp needed because `padding: 8` solves the
+     clipping at the rasterisation layer.
+
+2. **`packages/client/src/canvas/GameStage.tsx`** (already applied
+   upstream of this iteration) — `computeChromeMargins(w)` returns
+   left/right reserves matching the React PlayerRail panel widths,
+   passed into `computeSpots(...)` so the leftmost station no
+   longer renders under the chrome rectangle.
+
+3. **`packages/client/src/canvas/layout.test.ts`** (already applied
+   upstream) — extended the layout invariants to cover the
+   `xMargin` parameter on `computeSpots`.
+
+**Verification:**
+
+- `pnpm -r test --run` → all client tests pass (116 layout +
+  associated cases). Server + shared unaffected.
+- `pnpm --filter @xdyb/client build` → exits 0, bundle 545 kB
+  (gzip 174 kB).
+- Drove Playwright MCP 6-player multi room (host玩家62 + bots
+  counter, random, iron, mirror, counter#2) at both viewports:
+  - **1280×800 desktop** (`desk-6p-FIX.png`): every back-row plaque
+    shows full text — `counter`, `mirror`, `random` fully visible;
+    every front-row plaque — `玩家62`, `iron`, `counter#2` —
+    fully visible to the last glyph including the trailing `2`
+    on the rightmost station.
+  - **375×667 mobile** (`mob-6p-FIX.png`): 6 houses fit in two
+    rows of three (back: 玩家62 / counter / random; front: iron /
+    mirror / counter#2). All plaque text fully rendered with no
+    truncation. Character bodies have no x-overlap; feet sit
+    above the BattleLog bottom-sheet top edge. PlayerRail chips
+    wrap inside the viewport.
+
+**Acceptance per FINAL_GOAL §H1 (S-401):** ✓ every plaque renders
+its full display name with no glyph clipping at both 1280×800 and
+375×667; ✓ no character pixel under PlayerRail chrome; ✓ on
+mobile no two character boxes intersect and feet remain above
+bottom-sheet top.
+

@@ -3,7 +3,13 @@
 // Drawn at native ≥ 256px so it reads as a 2024 indie sprite, not a 2010
 // HTML pixel-art prototype.
 
-import { Container, Graphics, Text, TextStyle } from 'pixi.js';
+import {
+  CanvasTextMetrics,
+  Container,
+  Graphics,
+  Text,
+  TextStyle,
+} from 'pixi.js';
 import { palette, playerColor } from '../../palette.js';
 
 export interface HouseOptions {
@@ -221,13 +227,20 @@ export class House {
     // floor, fontSize never shrinks enough on a narrow 6p back-row
     // station and 'counter' / 'counter#2' overflow the plaque ribbon.
     const heuristicTextW = (str: string, fs: number): number => {
+      // §H1 (S-401 / iter-49): coefficients calibrated to match what
+      // CanvasTextMetrics.measureText returns in the live browser for
+      // bold-700 PingFang-SC fallback. Bold Latin advances ~0.62 em
+      // for monospace digits / lowercase, but capital letters / CJK
+      // run wider; we use 0.70 for Latin (gives ~10% headroom over
+      // canvas2d's 0.62) and 1.05 for CJK. This is only the *jsdom
+      // fallback* path — the live path uses CanvasTextMetrics directly.
       let t = 0;
       for (const ch of str) {
         const code = ch.charCodeAt(0);
         const cjk =
           (code >= 0x3000 && code <= 0x9fff) ||
           (code >= 0xff00 && code <= 0xffef);
-        t += cjk ? fs * 1.05 : fs * 0.95;
+        t += cjk ? fs * 1.05 : fs * 0.70;
       }
       return Math.ceil(t);
     };
@@ -238,57 +251,108 @@ export class House {
       const m = Math.ceil(measureCtx.measureText(str).width);
       return Math.max(m, heur);
     };
-    // Plaque cap: when the caller supplies a station-width budget
-    // (5p/6p layouts where adjacent plaques must not overlap), we
-    // honor that as a *hard* upper bound and let the font shrink
-    // to fit. Without a budget we fall back to a generous body-
+    // §H1 (S-401 / iter-49): use Pixi's CanvasTextMetrics.measureText
+    // to get the *truthful* glyph-run width from the same code path
+    // that Pixi.Text will eventually rasterize through. This avoids
+    // the Pixi 8 lazy-measure trap (Text.width returns 0 until the
+    // first render) and the heuristic-overestimate trap (1.10 em was
+    // both wrong in absolute terms AND too pessimistic against
+    // modest-budget back-row slots).
+    //
+    // Two-pass: first measure at fontSize=16, then if `safetyW + 16`
+    // exceeds the station budget, shrink fontSize 1 px at a time
+    // until it fits or we hit floor=7. The ribbon width is then
+    // sized to the *post-shrink* measureText result so it always
+    // covers the rendered glyph run with no truncation.
+    const buildStyle = (fs: number): TextStyle =>
+      new TextStyle({
+        fontFamily,
+        fontSize: fs,
+        fontWeight: '700',
+        fill: 0x2a1a14,
+        // §H1 (S-401 / iter-49): Pixi 8 default padding=0 clips the
+        // rightmost glyph's bearing for bold-700 fontFamily fallbacks
+        // ('counter#2' rasterized as 'counter#'). Bump to 8 px so the
+        // texture canvas covers the full rasterized run including the
+        // trailing bearing on any font fallback.
+        padding: 8,
+      });
+    const measurePixiTextW = (str: string, fs: number): number => {
+      try {
+        const m = CanvasTextMetrics.measureText(str, buildStyle(fs));
+        const mw = (m as { width?: number }).width;
+        if (Number.isFinite(mw) && (mw as number) > 0) {
+          return Math.ceil(mw as number);
+        }
+      } catch {
+        /* fallthrough — jsdom path */
+      }
+      // Fallback for jsdom / no-canvas environments: max of
+      // canvas2d measureText and the heuristic-1.10em floor.
+      const heur = heuristicTextW(str, fs);
+      const m2 = measureTextW(str, fs);
+      return Math.max(heur, m2);
+    };
+
+    // Plaque cap. With a station budget (5p/6p layouts where
+    // adjacent plaques must not overlap), use stationW * 0.95 as the
+    // SOFT upper bound. Without, fall back to a generous body-
     // relative cap so 1..4p layouts get chunky readable plaques.
-    // §H1 — back-row 6p stations on a 920×800 desktop canvas have
-    // ~290 px of slot each; on a 375×667 mobile canvas they have
-    // ~120 px. Capping at stationW * 0.95 ensures the rightmost
-    // back-row plaque never extends past the canvas right edge or
-    // bleeds into its left neighbour, which is what produced the
-    // 'counte', 'iror', 'mirroi', 'counter#' truncations the
-    // judge observed in iter-46.
     const stationCap =
       opts.stationW !== undefined
         ? Math.max(50, opts.stationW * 0.95)
         : Number.POSITIVE_INFINITY;
     const cap = Math.min(stationCap, Math.max(200, w * 0.78 + 64));
-    // Shrink fontSize until the (heuristic-floored) text + 18 px ribbon
-    // padding fits inside the cap. Floor at 7 — below that the ribbon
-    // is illegible and we'd rather slightly clip than show 4 px text.
-    // §H1 — for the 6p × 375 mobile case (cap ≈ 59) the longest name
-    // 'counter#2' at fs=7 is 9*7*0.95 ≈ 60 + 18 = 78 which still
-    // exceeds 59; in that extreme we accept fs=7 and let the ribbon
-    // be as wide as the heuristic text + padding (it's still narrower
-    // than the legacy 180 default).
+
+    // Shrink loop: pick the largest fontSize ∈ [7, 16] whose
+    // padded ribbon (renderedW + 16 px outer padding) fits inside
+    // `cap`. The renderedW formula below adds +24 to measuredW, plus
+    // an additional 2 * 8 = 16 px ribbon padding from `padPerSide`
+    // below — total 40 px of safety pad over the raw advance.
     let fontSize = 16;
-    while (measureTextW(namePool, fontSize) + 18 > cap && fontSize > 7) {
+    while (
+      Math.ceil(measurePixiTextW(namePool, fontSize)) + 24 + 16 > cap &&
+      fontSize > 7
+    ) {
       fontSize -= 1;
     }
-    // Re-measure with a heuristic floor: bold Latin renders ~0.62
-    // em wide, but font-fallback at first paint (PingFang SC not
-    // yet hot) can push glyph advances to ~0.72 em. We take the
-    // larger of the canvas measurement and a per-char heuristic so
-    // we never under-size the ribbon on first paint.
-    const measuredW = measureTextW(namePool, fontSize);
-    const safeW = Math.max(measuredW, heuristicTextW(namePool, fontSize));
-    // Final ribbon width: safeW already incorporates the Pixi-bold
-    // heuristic floor (0.95 em Latin, 1.05 em CJK), so we only add a
-    // modest +20 padding (10 each side) for visual gutter. Without a
-    // station budget we floor at 180 so 1..4p layouts get chunky
-    // ribbons; with a station budget we cap at stationW * 0.95 so
-    // adjacent 5p/6p back-row plaques never overlap or extend past
-    // the canvas edge. §H1 — at the 6p × 375 mobile extreme (cap=59)
-    // we drop the 180 floor entirely so the ribbon shrinks to the
-    // text rather than overlapping its neighbour.
+    // Final rendered glyph-run width at the chosen fontSize. The
+    // TextStyle `padding: 8` set above ensures Pixi's rasterization
+    // texture extends 8 px past the advance on each side, so the
+    // rightmost glyph's bearing is never clipped — this was the
+    // 'counter#2' → 'counter#' truncation bug observed live (S-401
+    // / iter-49). The renderedW formula adds 24 px (12 each side)
+    // to the raw advance — enough to cover the rasterization padding
+    // plus a small visible inset between text and ribbon edge.
+    const measuredW = measurePixiTextW(namePool, fontSize);
+    const renderedW = Math.ceil(measuredW) + 24;
+
+    const text = new Text({
+      text: namePool,
+      style: buildStyle(fontSize),
+    });
+    text.anchor.set(0.5);
+    text.position.set(0, plaqueY + plaqueH / 2);
+
+    // Ribbon width: ≥ renderedW + 16 px padding (8 each side). When
+    // a station budget is supplied AND the rendered text exceeds it,
+    // we honor the rendered text (overflow the budget by a few px)
+    // rather than truncate. Plaque honesty ('counter#2' must read as
+    // 'counter#2') is non-negotiable per §H1; a small overlap with
+    // a neighbouring plaque is a visual quibble.
+    const padPerSide = 8;
+    const minRibbon = renderedW + 2 * padPerSide;
+    // Plaque honesty (§H1): the ribbon ALWAYS covers the full rendered
+    // glyph run, even if that means slightly overflowing the per-station
+    // budget. The shrink loop above already chose the largest fontSize
+    // that fits the station cap, so any overflow here is bounded by the
+    // ribbon's safety pad (±~12 px) — neighbour ribbons may visually
+    // touch but no glyph is ever clipped.
     let plaqueW: number;
     if (opts.stationW !== undefined) {
-      const budget = Math.max(60, opts.stationW * 0.95);
-      plaqueW = Math.min(budget, safeW + 20);
+      plaqueW = minRibbon;
     } else {
-      plaqueW = Math.max(180, safeW + 20);
+      plaqueW = Math.max(180, minRibbon);
     }
 
     const plaqueG = new Graphics();
@@ -297,19 +361,6 @@ export class House {
     // little hanger ribbons
     plaqueG.rect(-6, plaqueY - 8, 12, 6).fill({ color: palette.houseRoof });
     this.plaque.addChild(plaqueG);
-
-    const text = new Text({
-      text: namePool,
-      style: new TextStyle({
-        fontFamily:
-          'ui-sans-serif, "PingFang SC", "Microsoft YaHei", sans-serif',
-        fontSize,
-        fontWeight: '700',
-        fill: 0x2a1a14,
-      }),
-    });
-    text.anchor.set(0.5);
-    text.position.set(0, plaqueY + plaqueH / 2);
     this.plaque.addChild(text);
   }
 

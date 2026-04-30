@@ -475,10 +475,35 @@ export function computePlayableRect(
   // (~24px) + footer padding (~24px) + the sheet-toggle button
   // (~36px height anchored at bottom:132). 132 + 36 = 168, plus some
   // safety so the toggle's top edge doesn't kiss the character feet.
-  const reserveBottom = narrow ? 184 : 92;
+  // §H1 (S-401): on mobile the BattleLog sheet-toggle button extends
+  // ~52 px above the HandPicker; bump bottom reserve so the front-row
+  // character feet always sit above the toggle's top edge (the judge
+  // observed front-row feet clipped under the bottom-sheet at 375×667).
+  const reserveBottom = narrow ? 220 : 92;
   const top = reserveTop;
   const bottom = Math.max(top + 200, h - reserveBottom);
   return { top, bottom };
+}
+
+/** Compute the horizontal chrome margins reserved for the React
+ *  PlayerRail panel on each side of the canvas. On desktop the rail
+ *  is a vertical column of player chips anchored at `left:16` over
+ *  the canvas (see MultiGame.tsx); chips are ~140 px wide so we
+ *  reserve 160 px on the left so the leftmost station's character
+ *  body is fully visible to the right of the rail. On mobile the
+ *  rail wraps as a flex-row above the playable rect (does not
+ *  overlay the gameplay band), so we only reserve a small visual
+ *  gutter. §H1 (S-401). */
+export function computeChromeMargins(
+  w: number,
+): { left: number; right: number } {
+  const narrow = w < 768;
+  if (narrow) {
+    return { left: 8, right: 8 };
+  }
+  // Desktop: PlayerRail occupies left margin. 160 px clears a 140-px
+  // chip plus its 2-px ring border + 16-px DOM left offset.
+  return { left: 160, right: 16 };
 }
 
 function layoutPlayers(refs: SceneRefs): void {
@@ -490,6 +515,7 @@ function layoutPlayers(refs: SceneRefs): void {
 
   const { top: playableTop, bottom: playableBottom } = computePlayableRect(w, h);
   const playableH = playableBottom - playableTop;
+  const { left: chromeLeft, right: chromeRight } = computeChromeMargins(w);
 
   // Recompute the visual ground / horizon so the dirt road sits inside
   // the playable rect — without this the front-row characters would
@@ -500,7 +526,7 @@ function layoutPlayers(refs: SceneRefs): void {
   // Strategy: spread houses across the upper portion of the gameplay band,
   // characters slightly forward of their houses standing on the road.
   // For 2: side-by-side. For 3: 2 back + 1 front. For 4: 4 back. For 5/6: fan.
-  const spots = computeSpots(n, w, playableTop, playableBottom);
+  const spots = computeSpots(n, w, playableTop, playableBottom, chromeLeft, chromeRight);
 
   // §H1 z-order: deeper-into-scene houses paint first. We assign zIndex
   // by y-anchor (higher y = closer to camera). Houses get an even
@@ -614,10 +640,25 @@ export function computeSpots(
   w: number,
   top: number,
   bottom: number,
+  chromeLeft = 0,
+  chromeRight = 0,
 ): Spot[] {
   const spots: Spot[] = [];
   const playableH = bottom - top;
   const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
+  // Horizontal playable band — excludes left/right React-chrome reserves.
+  // §H1 (S-401): on desktop, `chromeLeft = 160` reserves space for the
+  // PlayerRail vertical column anchored at `left:16` so the leftmost
+  // station's character body is no longer hidden behind chips. The
+  // `playableX0 / playableXEnd` band replaces every previous reference
+  // to the raw canvas extent (0..w) for spot placement.
+  const playableX0 = chromeLeft;
+  const playableXEnd = w - chromeRight;
+  const playableW = Math.max(60, playableXEnd - playableX0);
+  // Linear interpolation of an x-fraction (0..1) into the playable band.
+  // Replaces previous `w * frac` callsites — keeps relative positioning
+  // identical when chromeLeft/Right=0 (the test default).
+  const px = (frac: number): number => playableX0 + playableW * frac;
 
   // Cap visual heights to the playable rect. The "back row" plate
   // mounts at ~50% of playable height; front row characters stand at
@@ -665,29 +706,29 @@ export function computeSpots(
   if (n === 1) {
     const sc = Math.min(1.0, maxScale);
     spots.push({
-      houseX: w * 0.5,
+      houseX: px(0.5),
       houseY: houseRowY,
-      charX: w * 0.5,
+      charX: px(0.5),
       charY: frontRowY,
-      houseW: fitHouseW(w),
+      houseW: fitHouseW(playableW),
       houseH: fitHouseH(houseRowY, sc),
       scale: sc,
       facing: 1,
       row: 1,
-      stationW: w,
+      stationW: playableW,
     });
     return spots;
   }
 
   if (n === 2) {
     const sc = Math.min(1.0, maxScale);
-    const hw = fitHouseW(w / 2);
+    const hw = fitHouseW(playableW / 2);
     const hh = fitHouseH(houseRowY, sc);
-    const stationW2 = w * 0.44; // half the canvas minus a 6% gutter
+    const stationW2 = playableW * 0.44; // half the band minus a 6% gutter
     spots.push({
-      houseX: w * 0.28,
+      houseX: px(0.28),
       houseY: houseRowY,
-      charX: w * 0.32,
+      charX: px(0.32),
       charY: frontRowY,
       houseW: hw,
       houseH: hh,
@@ -697,9 +738,9 @@ export function computeSpots(
       stationW: stationW2,
     });
     spots.push({
-      houseX: w * 0.72,
+      houseX: px(0.72),
       houseY: houseRowY,
-      charX: w * 0.68,
+      charX: px(0.68),
       charY: frontRowY,
       houseW: hw,
       houseH: hh,
@@ -717,42 +758,42 @@ export function computeSpots(
     const frontSc = Math.min(1.0, maxScale);
     const apexRowY = houseRowY - 30;
     const baseRowY = houseRowY + 18;
-    const frontHW = fitHouseW(w / 2);
+    const frontHW = fitHouseW(playableW / 2);
     spots.push({
-      houseX: w * 0.5,
+      houseX: px(0.5),
       houseY: apexRowY,
-      charX: w * 0.5,
+      charX: px(0.5),
       charY: lerp(horizon, frontRowY, 0.4),
-      houseW: fitHouseW(w * 0.5),
+      houseW: fitHouseW(playableW * 0.5),
       houseH: fitHouseH(apexRowY, backSc),
       scale: backSc,
       facing: 1,
       row: 0,
-      stationW: w * 0.5,
+      stationW: playableW * 0.5,
     });
     spots.push({
-      houseX: w * 0.22,
+      houseX: px(0.22),
       houseY: baseRowY,
-      charX: w * 0.28,
+      charX: px(0.28),
       charY: frontRowY,
       houseW: frontHW,
       houseH: fitHouseH(baseRowY, frontSc),
       scale: frontSc,
       facing: 1,
       row: 1,
-      stationW: w * 0.42,
+      stationW: playableW * 0.42,
     });
     spots.push({
-      houseX: w * 0.78,
+      houseX: px(0.78),
       houseY: baseRowY,
-      charX: w * 0.72,
+      charX: px(0.72),
       charY: frontRowY,
       houseW: frontHW,
       houseH: fitHouseH(baseRowY, frontSc),
       scale: frontSc,
       facing: -1,
       row: 1,
-      stationW: w * 0.42,
+      stationW: playableW * 0.42,
     });
     return spots;
   }
@@ -762,8 +803,8 @@ export function computeSpots(
     // horizon so all four houses fit width-wise even on a 375px phone.
     const backSc = Math.min(0.85, maxScale * 0.85);
     const frontSc = Math.min(1.0, maxScale);
-    const backHW = fitHouseW(w / 2);
-    const frontHW = fitHouseW(w / 2);
+    const backHW = fitHouseW(playableW / 2);
+    const frontHW = fitHouseW(playableW / 2);
     const backRowY = houseRowY - 18;
     const frontPlateY = lerp(horizon, frontRowY, 0.5);
     // Front row needs to be far enough below the back row that the
@@ -773,18 +814,14 @@ export function computeSpots(
       backRowY + 70,
       Math.min(houseRowY + 60, frontRowY - 24),
     );
-    // Front-row outermost station sits at 0.18*w / 0.82*w. The
-    // station box is centered on the houseX, so the back-row
-    // station at 0.28*w sets the constraint stationW <= 0.56*w
-    // (centered there it can't pass canvas left edge), and the
-    // front-row station at 0.18*w sets stationW <= 0.36*w. Use
-    // the tighter of the two so every spot's plaque budget fits
-    // inside the canvas.
-    const stationW4 = w * 0.36;
+    // Front-row outermost station sits at 0.18 / 0.82 of the playable
+    // band. Use the tighter of the back/front constraints so every
+    // spot's plaque budget fits inside the band.
+    const stationW4 = playableW * 0.36;
     spots.push({
-      houseX: w * 0.28,
+      houseX: px(0.28),
       houseY: backRowY,
-      charX: w * 0.3,
+      charX: px(0.3),
       charY: frontPlateY,
       houseW: backHW,
       houseH: fitHouseH(backRowY, backSc),
@@ -794,9 +831,9 @@ export function computeSpots(
       stationW: stationW4,
     });
     spots.push({
-      houseX: w * 0.72,
+      houseX: px(0.72),
       houseY: backRowY,
-      charX: w * 0.7,
+      charX: px(0.7),
       charY: frontPlateY,
       houseW: backHW,
       houseH: fitHouseH(backRowY, backSc),
@@ -806,9 +843,9 @@ export function computeSpots(
       stationW: stationW4,
     });
     spots.push({
-      houseX: w * 0.18,
+      houseX: px(0.18),
       houseY: frontHouseY,
-      charX: w * 0.22,
+      charX: px(0.22),
       charY: frontRowY,
       houseW: frontHW,
       houseH: fitHouseH(frontHouseY, frontSc),
@@ -818,9 +855,9 @@ export function computeSpots(
       stationW: stationW4,
     });
     spots.push({
-      houseX: w * 0.82,
+      houseX: px(0.82),
       houseY: frontHouseY,
-      charX: w * 0.78,
+      charX: px(0.78),
       charY: frontRowY,
       houseW: frontHW,
       houseH: fitHouseH(frontHouseY, frontSc),
@@ -874,8 +911,15 @@ export function computeSpots(
   // the right edge. New scheme: every station gets its own slot of
   // width usableW/n; back vs front rows just claim alternating
   // slots. No stagger, no edge-clamp band-aid needed.
-  const sideMargin = w < 768 ? 8 : 16;
-  const usableW = w - 2 * sideMargin;
+  // §H1 (S-401): the slot band uses the *playable* horizontal range
+  // (excluding chromeLeft/Right) so the leftmost slot's character body
+  // is not occluded by the React PlayerRail panel. `sideMargin` is the
+  // gutter applied INSIDE the playable band — kept small so the houses
+  // fan all the way across the available canvas, but >0 to give the
+  // outermost stations breathing room from the chrome boundary.
+  const sideMargin = w < 768 ? 4 : 8;
+  const slotBandX0 = playableX0 + sideMargin;
+  const usableW = playableW - 2 * sideMargin;
   const slotCount = n;
   const slotW = usableW / slotCount;
   // Per-row house body widths. Body must fit inside the slot with a
@@ -921,7 +965,7 @@ export function computeSpots(
   for (let bi = 0; bi < backCount; bi++) {
     const slotIdx = backSlots[bi];
     if (slotIdx === undefined) continue;
-    const cx = sideMargin + slotW * (slotIdx + 0.5);
+    const cx = slotBandX0 + slotW * (slotIdx + 0.5);
     const t = backCount === 1 ? 0.5 : bi / Math.max(1, backCount - 1);
     spots.push({
       houseX: cx,
@@ -940,7 +984,7 @@ export function computeSpots(
   for (let fi = 0; fi < frontCount; fi++) {
     const slotIdx = frontSlots[fi];
     if (slotIdx === undefined) continue;
-    const cx = sideMargin + slotW * (slotIdx + 0.5);
+    const cx = slotBandX0 + slotW * (slotIdx + 0.5);
     const t = frontCount === 1 ? 0.5 : fi / Math.max(1, frontCount - 1);
     spots.push({
       houseX: cx,

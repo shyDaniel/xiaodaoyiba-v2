@@ -16,7 +16,11 @@
 // has no nameplate (the nameplate is on the house plaque).
 
 import { describe, expect, test } from 'vitest';
-import { computePlayableRect, computeSpots } from './GameStage.js';
+import {
+  computeChromeMargins,
+  computePlayableRect,
+  computeSpots,
+} from './GameStage.js';
 
 interface Box {
   top: number;
@@ -246,5 +250,58 @@ describe('§H1 mobile + desktop layout: no clipping for 2..6 players × {1280×8
         }
       });
     }
+  }
+});
+
+// §H1 (S-401): with the desktop PlayerRail occupying chromeLeft=160px
+// of the canvas, the leftmost station's character body must lie
+// entirely to the right of the chrome boundary so the rail panel
+// does not occlude the leftmost player. On mobile the rail wraps
+// above the canvas and chromeLeft is only 8px so this is trivial.
+describe('§H1 chrome-aware layout: leftmost station clears PlayerRail (desktop)', () => {
+  test('computeChromeMargins desktop reserves 160 px on the left', () => {
+    const m = computeChromeMargins(1280);
+    expect(m.left).toBeGreaterThanOrEqual(140);
+    expect(m.right).toBeGreaterThanOrEqual(8);
+  });
+  test('computeChromeMargins mobile reserves only a small gutter', () => {
+    const m = computeChromeMargins(375);
+    expect(m.left).toBeLessThan(40);
+    expect(m.right).toBeLessThan(40);
+  });
+
+  for (const n of PLAYER_COUNTS) {
+    test(`desktop-1280x800 ${n} players: every station sits inside [chromeLeft, w-chromeRight]`, () => {
+      const w = 1280;
+      const h = 800;
+      const { left, right } = computeChromeMargins(w);
+      const { top: pTop, bottom: pBottom } = computePlayableRect(w, h);
+      const spots = computeSpots(n, w, pTop, pBottom, left, right);
+      for (let i = 0; i < spots.length; i++) {
+        const s = spots[i]!;
+        const cb = charBox(s);
+        const hb = houseBox(s);
+        // Every spot's char box must be entirely to the right of
+        // the chrome's left edge (so the PlayerRail panel does not
+        // overlap the leftmost character body).
+        expect(
+          cb.left,
+          `n=${n} i=${i} char left vs chromeLeft`,
+        ).toBeGreaterThanOrEqual(left - 1);
+        expect(
+          cb.right,
+          `n=${n} i=${i} char right vs chromeRight`,
+        ).toBeLessThanOrEqual(w - right + 1);
+        // House body too.
+        expect(
+          hb.left,
+          `n=${n} i=${i} house left vs chromeLeft`,
+        ).toBeGreaterThanOrEqual(left - 8);
+        expect(
+          hb.right,
+          `n=${n} i=${i} house right vs chromeRight`,
+        ).toBeLessThanOrEqual(w - right + 8);
+      }
+    });
   }
 });
