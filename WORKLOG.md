@@ -2769,3 +2769,72 @@ succeeds.
 - `packages/client/src/canvas/stage/House.test.ts` (new S-440 test)
 - `packages/client/src/canvas/layout.test.ts` (relaxed
   stationW assertion `>40` → `>=40` since floor is now hit)
+
+## Iteration 65 — §H1 6-bot plaque-aware canvas-edge clamp (S-441)
+
+**Problem.** Iter61 closed the plaque-edge bug visually with
+`clampSlot` (S-439) and S-440 added the texture-overshoot pad,
+but a residual 5% half-width gap in the clamp formula let the
+rightmost plaque texture spill past `canvas.width − 4` on 6p ×
+1280×800 and 6p × 375×667. Concretely the slot 5 station on
+desktop computed `plaqueHalf = (stW × 0.95)/2 + 20` = 78.27 with
+`stW = 122.67`; this gave `maxCx = 776 − 4 − 78.27 = 693.73`
+while the *actual* canvas plaque ribbon is capped by
+`House.draw` at `max(40, opts.stationW)` (the FULL stW, not 95%
+of it). Worst-case texture extent therefore lands at
+`693.73 + 122.67/2 + 20 = 775.4 ≈ canvas.width − 0.6`,
+overshooting the −4 budget by ~3.4 px.
+
+**Fix.** Drop the spurious `× 0.95` factor in `computeSpots`'s
+`clampSlot`. Replace `plaqueHalf = (stW × 0.95)/2 + PLAQUE_TEXT_PAD`
+with `plaqueHalf = stW/2 + PLAQUE_TEXT_PAD`. This makes the slot
+clamp account for the *actual* plaque ribbon ceiling
+(`House.draw` line 437–443: `plaqueW = min(minRibbon,
+max(40, opts.stationW))`). Post-fix on 6p × 776 desktop slot 5:
+`maxCx = 776 − 4 − 81.33 = 690.67` → `push = 4` →
+`stationW' = max(40, 122.67 − 8) = 114.67` → texture extent
+worst-case `690.67 + 114.67/2 + 20 = 768`, well inside the 772
+budget. On 6p × 375 mobile slot 0/5 the clamp pushes stationW
+to the 40-px floor as before; the visible ribbon stays inside
+canvas±4 with the same fs-floor 4 fallback as S-440.
+
+**Live verification (375×667 + 1280×800 headless Chromium, 6
+bots ['玩家49','counter','random','iron','mirror','counter#2']).**
+Desktop screenshot `s441-desktop-1280x800.png`: rightmost
+'counter#2' plaque ribbon ends well inside canvas right edge
+(visually ≈ x=895 in 1280-wide viewport, canvas right at 920).
+Leftmost '玩家49' plaque begins at canvas left + ~25 px, no
+clipping. Mobile screenshot `s441-mobile-375x667-canvas.png`:
+all 6 back-row + front-row plaques live inside the 375-wide
+canvas; rightmost 'counter#2' ribbon ends at ≈ x=355 with the
+ribbon's stationW pushed to the 40-px floor and font shrunk to
+fs=4 to keep the full string. Leftmost '玩家49' ribbon starts at
+≈ x=10. The lantern visual conflict at canvas-left on mobile is
+a separate z-order regression flagged for a future iteration; it
+does not violate S-441's acceptance contract (no canvas-edge
+clip, no ellipsis truncation).
+
+**New test.** `House.test.ts::S-441 acceptance: plaque texture
+worst-case extent ≤ canvas±4 (live + canvas-DOM viewports)`
+covers four viewports {375×667, 1280×800, 375×355, 776×616} and
+asserts for every spot:
+- `houseX − max(40, stationW)/2 − PLAQUE_TEXT_PAD ≥ 4`
+- `houseX + max(40, stationW)/2 + PLAQUE_TEXT_PAD ≤ canvas.w − 4`
+
+This is a true contract guard independent of jsdom's missing
+canvas API — it uses the worst-case `max(40, stationW)`
+ceiling that `House.draw` enforces in production rasterization.
+
+**Tests:** `pnpm -r typecheck` exits 0. `pnpm -r test` → 79
+shared + 21 server + 144 client (+4 from S-441 = 144) = 244
+green. `pnpm sim --players 4 --bots counter,random,iron,mirror
+--winner-strategy random-target+random-action --rounds 50 --seed
+42` → tie_rate=0.260 < 0.30, PULL_OWN_PANTS_UP firing (round 48
+gameRound 2 winner picked PULL_OWN_PANTS_UP — narration
+"玩家不慌不忙，把裤衩穿了回去"). `pnpm -r build` succeeds.
+
+**Files touched:**
+- `packages/client/src/canvas/GameStage.tsx` (clampSlot:
+  drop 0.95 factor; updated comment block)
+- `packages/client/src/canvas/stage/House.test.ts` (4 new
+  S-441 worst-case texture-extent tests)

@@ -248,6 +248,95 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
     });
   }
 
+  // §H1 (S-441) — the critical regression. The previous S-440
+  // clampSlot computed `plaqueHalf = stW * 0.95 / 2 + PLAQUE_TEXT_PAD`,
+  // which underestimated the canvas-space plaque half-width by 5%
+  // (House.draw caps the actual plaque at the FULL stationW, not
+  // 0.95×stationW, in canvas space after the parent's `scale`
+  // multiplier). On desktop 1280×800 (canvas 776×616) with a 6p ×
+  // worst-case-name layout, that 5% gap = ~3 px of half-width
+  // unaccounted for; combined with the +20 px PLAQUE_TEXT_PAD
+  // rasterization overshoot, the rightmost slot's text texture
+  // landed ~3 px past the canvas right edge — observed live as
+  // 'counter#2' trailing-glyph clip (iter63 verdict).
+  //
+  // S-441 fix drops the 0.95 factor: plaqueHalf = stW/2 +
+  // PLAQUE_TEXT_PAD. This test asserts the WORST-CASE bound: even if
+  // House.draw filled the plaque ribbon up to the full station slot
+  // (max(40, opts.stationW)), the texture (ribbon + PLAQUE_TEXT_PAD
+  // overshoot) still fits inside canvas±4 at every viewport.
+  for (const vp of [
+    { w: 375, h: 667, tag: 'S-441-mobile-live-375x667' },
+    { w: 1280, h: 800, tag: 'S-441-desktop-live-1280x800' },
+  ] as const) {
+    test(`S-441: 6p × ${vp.tag} worst-case plaque ceiling stays inside canvas±4`, () => {
+      const { left: chromeLeft, right: chromeRight } = computeChromeMargins(vp.w);
+      const { top: pTop, bottom: pBottom } = computePlayableRect(vp.w, vp.h);
+      const spots = computeSpots(6, vp.w, pTop, pBottom, chromeLeft, chromeRight);
+      expect(spots).toHaveLength(6);
+
+      // Pixi rasterization texture overshoot allowance — must match
+      // PLAQUE_TEXT_PAD in GameStage.computeSpots.
+      const PLAQUE_TEXT_PAD = 20;
+
+      // For every spot, compute the WORST-CASE texture extent — the
+      // upper bound House.draw could render even with the maximum
+      // plaqueW (= stationW). This is the *contract* the clamp must
+      // satisfy: regardless of what plaque width House.draw picks,
+      // the texture always stays inside canvas±4.
+      for (let i = 0; i < spots.length; i++) {
+        const s = spots[i]!;
+        // Canvas-space worst-case plaque width. House.draw does
+        // plaqueW(local) = min(minRibbon, max(40, opts.stationW))
+        // and opts.stationW = canvasStationW / scale, so canvas
+        // plaqueW ≤ canvasStationW (or 40, whichever is larger).
+        const worstPlaqueCanvasW = Math.max(40, s.stationW);
+        const worstTextureLeft = s.houseX - worstPlaqueCanvasW / 2 - PLAQUE_TEXT_PAD;
+        const worstTextureRight = s.houseX + worstPlaqueCanvasW / 2 + PLAQUE_TEXT_PAD;
+        expect(
+          worstTextureLeft,
+          `${vp.tag} slot=${i} worstTextureLeft=${worstTextureLeft.toFixed(2)} (must ≥ 4)`,
+        ).toBeGreaterThanOrEqual(4);
+        expect(
+          worstTextureRight,
+          `${vp.tag} slot=${i} worstTextureRight=${worstTextureRight.toFixed(2)} (must ≤ ${vp.w - 4})`,
+        ).toBeLessThanOrEqual(vp.w - 4);
+      }
+    });
+  }
+
+  // §H1 (S-441) — same regression on the canvas-DOM viewport sizes
+  // (mobile 375×355, desktop 776×616) that the layout system actually
+  // sees. Validates the contract holds at the dimensions that matter
+  // in practice.
+  for (const vp of [
+    { w: 375, h: 355, tag: 'S-441-mobile-canvas-375x355' },
+    { w: 776, h: 616, tag: 'S-441-desktop-canvas-776x616' },
+  ] as const) {
+    test(`S-441: 6p × ${vp.tag} worst-case plaque ceiling stays inside canvas±4`, () => {
+      const { left: chromeLeft, right: chromeRight } = computeChromeMargins(vp.w);
+      const { top: pTop, bottom: pBottom } = computePlayableRect(vp.w, vp.h);
+      const spots = computeSpots(6, vp.w, pTop, pBottom, chromeLeft, chromeRight);
+      expect(spots).toHaveLength(6);
+
+      const PLAQUE_TEXT_PAD = 20;
+      for (let i = 0; i < spots.length; i++) {
+        const s = spots[i]!;
+        const worstPlaqueCanvasW = Math.max(40, s.stationW);
+        const worstTextureLeft = s.houseX - worstPlaqueCanvasW / 2 - PLAQUE_TEXT_PAD;
+        const worstTextureRight = s.houseX + worstPlaqueCanvasW / 2 + PLAQUE_TEXT_PAD;
+        expect(
+          worstTextureLeft,
+          `${vp.tag} slot=${i} worstTextureLeft=${worstTextureLeft.toFixed(2)} (must ≥ 4)`,
+        ).toBeGreaterThanOrEqual(4);
+        expect(
+          worstTextureRight,
+          `${vp.tag} slot=${i} worstTextureRight=${worstTextureRight.toFixed(2)} (must ≤ ${vp.w - 4})`,
+        ).toBeLessThanOrEqual(vp.w - 4);
+      }
+    });
+  }
+
   test('every house plaque on 5p × 375 mobile fits inside its slot', () => {
     const w = 375;
     const h = 355;

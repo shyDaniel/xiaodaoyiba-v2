@@ -1005,32 +1005,46 @@ export function computeSpots(
     }
   }
 
-  // §H1 (S-440) — canvas-edge clamp for the OUTERMOST station(s) in
-  // each row. Even though slotBandX0 + slotW*(slotIdx+0.5) places
-  // every station inside the slot band, the plaque ribbon is centered
-  // on cx with canvas-space half-width = stationW*0.95/2; AND Pixi's
-  // TextStyle.padding=8 widens the rasterized text texture by ~8 px
-  // on each side beyond the ribbon.
+  // §H1 (S-441) — canvas-edge clamp for the OUTERMOST station(s) in
+  // each row. The brief from iter61 / iter63 explicitly prescribes:
+  // *after* the per-station plaque budget is computed, clamp station.x
+  // to [canvasLeft + plaqueWmax/2 + sideMargin, canvasRight -
+  //     plaqueWmax/2 - sideMargin]
+  // S-440 attempted this but used `stW * 0.95` as the plaqueHalf
+  // estimate. That is WRONG: House.draw clamps the actual plaque
+  // ribbon at `min(minRibbon, max(40, opts.stationW))` (in local
+  // space), which after the parent's `scale` multiplier yields a
+  // canvas-space plaque ribbon up to `stationW` wide — a full 5%
+  // wider than the S-440 estimate. On a 122-px desktop slot that
+  // leaves ~3 px of half-width unaccounted for; combined with the
+  // PLAQUE_TEXT_PAD rasterization overshoot, the rightmost slot's
+  // text texture still landed ~3 px past the canvas right edge —
+  // exactly the 'counter#2' trailing-glyph clip iter63 documented at
+  // 1280×800. The same root cause produces the leftmost '玩家NN'
+  // clip at 375×667.
   //
-  // S-440: PLAQUE_TEXT_PAD bumped 10 → 20 to absorb the worst-case
-  // bold-700 PingFang-fallback rasterization overshoot observed live
-  // on 'counter#2' (~14-18 px past the ribbon edge per iter-63
-  // verdict — the texture canvas widens beyond the ribbon graphics
-  // rectangle on first paint before the @font-face PingFang loads).
-  // Combined with House.draw's font-floor lowered from 5 → 4 in
-  // S-440, this guarantees the rasterized 'counter#2' texture fits
-  // entirely inside the canvas±4 acceptance band even on a 60-px
-  // 6p × 375 slot. The lantern-overlap concern from the S-440 brief
-  // is addressed independently by promoting the plaque overlay to a
-  // dedicated `plaqueLayer` added AFTER fgLayer to app.stage (see
-  // GameStage init), so the foreground lantern sprites paint BEHIND
-  // the plaques rather than above them. That eliminates the need
-  // for a lantern-safe-zone cx-clamp (which would have left no
-  // usable band for 6 slots on a 375-px canvas).
+  // S-441 fix: drop the 0.95 factor. plaqueHalf = stW/2 +
+  // PLAQUE_TEXT_PAD. This is the *true ceiling* of the canvas-space
+  // plaque + texture overshoot; with this estimate the clamp becomes
+  // a hard contract that matches the §H1 acceptance gate (plaque
+  // ribbon AND rasterized text both inside canvas±4) regardless of
+  // font-fallback width.
+  //
+  // PLAQUE_TEXT_PAD=20 still absorbs the bold-700 PingFang-fallback
+  // rasterization overshoot. The lantern-overlap concern from S-440
+  // is addressed independently by the dedicated `plaqueLayer` added
+  // AFTER fgLayer to app.stage (see GameStage init); plaques paint
+  // above the foreground lanterns regardless of x position.
   const PLAQUE_TEXT_PAD = 20; // S-440: bumped 10 → 20 for bold-fallback rasterization overshoot
   const edgeMargin = 4; // §H1 acceptance: plaque.left ≥ 4, plaque.right ≤ w-4
   const clampSlot = (cx: number, stW: number): { cx: number; stationW: number } => {
-    const plaqueHalf = (stW * 0.95) / 2 + PLAQUE_TEXT_PAD;
+    // Plaque-aware half-width: full slot is the canvas-space ceiling
+    // for the plaque ribbon (House.draw clamps to ≤ stationW), plus
+    // PLAQUE_TEXT_PAD for Pixi's bold-fallback rasterization
+    // overshoot. S-441: removed the spurious 0.95 factor that left
+    // 5% of half-width unaccounted for and let the rightmost
+    // 'counter#2' texture spill past canvas-right by ~3 px live.
+    const plaqueHalf = stW / 2 + PLAQUE_TEXT_PAD;
     const minCx = edgeMargin + plaqueHalf;
     const maxCx = w - edgeMargin - plaqueHalf;
     if (cx < minCx) {
