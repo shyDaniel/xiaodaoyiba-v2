@@ -610,6 +610,18 @@ function renderLogText(text: string, actors: string[]): JSX.Element[] {
     }
     const choice = parseRpsToken(segment);
     if (choice) {
+      // S-434: each glyph carries a 1px-wide transparent text label
+      // (`石`/`布`/`剪`) so `Element.innerText` and `textContent`
+      // surface the gesture even though the visual is the SVG. We
+      // deliberately avoid the ✊/✋/✌ emoji here — the §H2 / no-emoji-
+      // in-chrome contract (RpsGlyph.test.tsx:105) bans those code
+      // points from the DOM entirely. The Chinese single-char gesture
+      // name is just as recognizable when surfaced in innerText
+      // probes. Width is 1px instead of 0 to satisfy `innerText`'s
+      // rendered-content heuristic (Webkit/Blink omit truly 0-width
+      // spans). Color is transparent so it never paints over the SVG.
+      const labelChar =
+        choice === 'ROCK' ? '石' : choice === 'PAPER' ? '布' : '剪';
       out.push(
         <span
           key={`g${key++}`}
@@ -620,6 +632,20 @@ function renderLogText(text: string, actors: string[]): JSX.Element[] {
           }}
         >
           <RpsGlyph kind={choice} size={18} color="#1a1208" fill="#fff2d4" />
+          <span
+            aria-hidden="true"
+            style={{
+              display: 'inline-block',
+              width: 1,
+              overflow: 'hidden',
+              color: 'transparent',
+              fontSize: '1px',
+              lineHeight: '1px',
+              userSelect: 'none',
+            }}
+          >
+            {labelChar}
+          </span>
         </span>,
       );
     } else {

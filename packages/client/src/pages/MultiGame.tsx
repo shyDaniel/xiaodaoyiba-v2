@@ -18,7 +18,13 @@
 //      that emits room:rematch.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ActionKind, Effect, PlayerState, RpsChoice } from '@xdyb/shared';
+import {
+  resolveRps,
+  type ActionKind,
+  type Effect,
+  type PlayerState,
+  type RpsChoice,
+} from '@xdyb/shared';
 import {
   GameStage,
   type StageController,
@@ -35,6 +41,7 @@ import {
   type LogVerb,
   useIsMobile,
 } from '../components/BattleLog.js';
+import { rpsToken } from '../components/RpsGlyph.js';
 import { palette, toCss, playerColor, setPlayerColorMap } from '../palette.js';
 import {
   isMuted as audioIsMuted,
@@ -274,6 +281,55 @@ export function MultiGamePage(): JSX.Element {
               setLogEntries,
             );
           };
+
+          // S-434: emit the R{N}.rps row synchronously, BEFORE delegating
+          // to stage.play(). EffectPlayer renders the reveal glyphs +
+          // 'reveal' SFX but never invokes onNarration for RPS_REVEAL,
+          // so the multi BattleLog historically had no reveal row at all
+          // (acceptance probe: zero rowKeys matching /^\d+\|rps\|/). The
+          // server already broadcasts the RPS_REVEAL effect inside
+          // result.effects (Room.ts:502 — broadcaster.emitRound carries
+          // result.effects verbatim); we extract throws[], reconstruct
+          // the winning-choice via shared resolveRps(), then append a
+          // single dedup-keyed row mirroring solo Game.tsx:343.
+          const reveal = head.effects.find(
+            (e): e is Extract<Effect, { type: 'RPS_REVEAL' }> =>
+              e.type === 'RPS_REVEAL',
+          );
+          if (reveal) {
+            const rpsResult = resolveRps(
+              reveal.throws.map(
+                (t) => [t.playerId, t.choice] as const,
+              ),
+            );
+            const throwsText = reveal.throws
+              .map((t) => rpsToken(t.choice))
+              .join('');
+            const winningChoice = rpsResult.winningChoice;
+            const winnersText =
+              rpsResult.tie || !winningChoice
+                ? '平'
+                : `${rpsToken(winningChoice)}×${rpsResult.winners.length}`;
+            const actorIds = reveal.throws.map((t) => {
+              const p = players.find((pp) => pp.id === t.playerId);
+              return p ? `${p.nickname}|${p.id}` : t.playerId;
+            });
+            appendLog(
+              {
+                round: head.round,
+                phase: 'rps',
+                verb: '掷',
+                text: `throws=[${throwsText}] winners=[${winnersText}]`,
+                actors: actorIds,
+                rowKey: buildRowKey({
+                  round: head.round,
+                  phase: 'rps',
+                  verb: '掷',
+                }),
+              },
+              setLogEntries,
+            );
+          }
 
           const stage = stageRef.current;
           if (stage) {

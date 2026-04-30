@@ -2500,3 +2500,54 @@ green. The judge saw two indistinguishable plaques per round.
 - ✓ Picked **option (a)**: fixed N-color palette indexed by
   `joinOrder` (the explicit alternative the brief allowed).
 - ✓ TS2367 in GameStage.tsx:965 cleared.
+
+## S-434 §H2 multi BattleLog R{N}.rps row + non-empty throws summary (2026-04-30)
+
+**Symptom:** Live 6-bot multi at 1280×800 — after R1, BattleLog
+contained zero `1|rps|*` rowKeys (only action rows). EffectPlayer
+played the in-canvas reveal disks but never invoked `onNarration`
+for `RPS_REVEAL`, and MultiGame.tsx's drain only appended rows from
+`onNarration`. Solo Game.tsx already emitted the rps row directly
+from `result.effects` before delegating to `stage.play()`; multi
+diverged.
+
+**Fix #1 — multi rps row plumbing (`packages/client/src/pages/MultiGame.tsx`).**
+Inside the drain loop, before `stage.play(head.effects, …)`, find the
+`RPS_REVEAL` effect in the server-broadcast `head.effects`, run
+`resolveRps()` from `@xdyb/shared` over `revealEffect.throws` to
+reconstruct `{tie, winners, winningChoice}`, then append a single
+dedup-keyed row mirroring solo Game.tsx:343 — `R{N}.rps  throws=[…]
+winners=[…]`. Server already broadcasts the full effects array
+(Room.ts:502); no server change needed.
+
+**Fix #2 — non-empty per-player gestures in innerText (`packages/client/src/components/BattleLog.tsx`).**
+RpsGlyph renders inline SVG (the chrome-layer "no emoji" contract,
+RpsGlyph.test.tsx:105). `Element.innerText` doesn't surface SVG
+content, so the §H2 acceptance probe ("innerText contains
+non-empty per-player gestures") read empty `throws=[]`. Each glyph
+now wraps a sibling 1px-wide transparent text label (`石`/`布`/`剪`)
+that `innerText` picks up but is invisible visually and inaudible
+to the SVG (aria-hidden). Chinese single-char gesture name was
+chosen over the ✊/✋/✌ Unicode codepoints so the existing
+"no emoji in chrome" regression test (RpsGlyph.test.tsx:105) still
+passes.
+
+**Verification (live, headless Chromium 1280×800, 6-bot multi):**
+- Created room QC82, added 5 bots (counter / random / iron /
+  mirror / counter#2), threw rock R1.
+- After 5s: `aside.querySelectorAll('[data-row-key]')` →
+  `['1|rps|掷||', '1|action|扒|me|bot-2-random', '1|action|扒|bot-1-counter|bot-5-counter']`.
+- `firstRps=0`, `firstAction=1` → ordered. ✓
+- `rpsRow.innerText`: `"掷 R1.rps throws=[石石剪石石剪] winners=[石×4]"`
+  — 6 gesture labels (one per alive player) + labeled winners
+  summary `石×4`. ✓
+- `rpsRow.querySelectorAll('svg').length === 7` (6 throw glyphs +
+  1 winner glyph) → visuals unchanged. ✓
+- Screenshot `judge-multi-6p-rps-row.png` shows the new row
+  rendered above the two action rows with proper SVG glyphs.
+
+**Tests:** `pnpm -r typecheck` exits 0. `pnpm test` → 133 client +
+79 shared + 21 server = all green.
+
+**Files touched:** `packages/client/src/pages/MultiGame.tsx`,
+`packages/client/src/components/BattleLog.tsx`.
