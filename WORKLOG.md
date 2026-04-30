@@ -2624,3 +2624,74 @@ stay within `[0, canvas.width]`. Worst-case names tested:
 - `packages/client/src/canvas/GameStage.tsx`
 - `packages/client/src/canvas/stage/House.ts`
 - `packages/client/src/canvas/stage/House.test.ts` (new)
+
+## Iteration 60 — §H1 6p × 375 plaque truncation: wordWrap + dynamic ribbon height (S-438)
+
+**Problem.** S-437's hard-clamp clamped the **ribbon** width to the
+per-station slot but left Pixi.Text's natural-width unbounded. On
+6-bot × 375 mobile the bold-700 PingFang-SC fallback rasterized
+glyph runs that overshot the slot — 'counter#2' rendered as 'ter#2'
+at the canvas-right edge, '玩家91' clipped to '玩…' at the left band.
+Live judge: `Pixi.Text.text` strictly equals `bot.displayName` AND
+plaque global bounds: `left ≥ 4` AND `right ≤ canvas.width - 4`.
+
+**Fix.** Enable Pixi's `wordWrap: true` + `breakWords: true` with
+`wordWrapWidth = plaqueW - 2*innerInset`. Long names wrap to a 2nd
+line at character boundaries (`'counter#2'` → `'counter\n#2'`)
+instead of overflowing horizontally; `Text.text` remains exactly
+`=== bot.displayName` (no ellipsis, no truncation), satisfying the
+acceptance contract. Ribbon height grows with line count so the
+wrapped text stays inside the dark backdrop.
+
+1. `House.ts::buildStyle(fs, wrapW = 0)` — when `wrapW > 0` the
+   TextStyle requests `wordWrap: true, wordWrapWidth: wrapW,
+   breakWords: true, lineHeight: ceil(fs * 1.15)`. The legacy
+   single-line path (used by the shrink-loop measurement passes)
+   keeps the natural advance.
+2. `House.ts::draw` — after the shrink loop and the ribbon-width
+   commit, compute `wrapW = max(20, plaqueW - 2*innerInset)` and
+   the wrapped line count via `wrapTextToWidth(...)` (a pure-TS
+   greedy character-break that mirrors Pixi's `breakWords`).
+   Ribbon height is `max(28, lines * lineH + 12)` — single-line
+   plaques unchanged at 28 px so 1..4p layouts visually identical.
+   The Pixi.Text is built with `style: buildStyle(fontSize, wrapW)`
+   so the rasterized texture is hard-bounded to the slot.
+3. `House.ts::wrapTextToWidth` — exported helper that simulates
+   Pixi's character-boundary wrap behaviour using a measure
+   callback. Used both in tests (jsdom heuristic path) and at
+   runtime for ribbon-height sizing (which can't query Pixi.Text
+   .height in jsdom because the canvas backend is missing).
+
+**New test:** `House.test.ts::S-438 acceptance: 6p × 375 plaques
+carry full displayName, stay inside canvas±4` — for each of the 6
+worst-case names `['玩家99','counter','random','iron','mirror',
+'counter#2']`:
+- the rendered Pixi.Text child's `.text === ownerName` exactly
+  (no `'…'` / `'...'` chars present)
+- canvas-space `plaqueLeft ≥ 4` AND `plaqueRight ≤ w - 4`
+
+**Live verification (375×667, 6 bots, headless Chromium).** Probe
+read each `house.plaque.children[Text]` via a temporary
+`window.__debugRefs` hook (reverted before commit). Output:
+| name      | text      | wordWrap | wrapW | fontSize | left  | right |
+|-----------|-----------|----------|-------|----------|-------|-------|
+| 玩家99    | 玩家99    | true     | 79    | 16       | 11.5  | 64.3  |
+| counter   | counter   | true     | 90    | 16       | 128.1 | 187.1 |
+| random    | random    | true     | 90    | 16       | 247.8 | 306.7 |
+| iron      | iron      | true     | 60    | 16       | 70.6  | 124.9 |
+| mirror    | mirror    | true     | 64    | 11       | 188.9 | 245.9 |
+| counter#2 | counter#2 | true     | 63    | 7        | 308.9 | 365.3 |
+
+Every Pixi.Text.text strictly equals displayName; every plaque
+global-bounds left ≥ 4 AND right ≤ 371 (canvas.width - 4 = 371).
+'counter#2' rasterized at fontSize=7 (above the 5-px floor) — the
+shrink loop preferred shrink over wrap because the 9-char
+'counter#2' fit on one line at fs=7; longer names would wrap.
+
+**Tests:** `pnpm -r typecheck` exits 0. `pnpm -r test` → 79 shared
++ 21 server + 136 client (+1 from S-438) = 236 green. `pnpm -r
+build` succeeds.
+
+**Files touched:**
+- `packages/client/src/canvas/stage/House.ts`
+- `packages/client/src/canvas/stage/House.test.ts`

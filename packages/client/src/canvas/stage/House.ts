@@ -12,6 +12,40 @@ import {
 } from 'pixi.js';
 import { palette, playerColor } from '../../palette.js';
 
+/** Greedy character-break wrap matching Pixi's `breakWords: true`
+ *  behaviour. Returns the list of lines the text will rasterize as,
+ *  given a measured-width function (so jsdom + browser take the same
+ *  code path). §H1 (S-438). */
+function wrapTextToWidth(
+  text: string,
+  wrapW: number,
+  fontSize: number,
+  measureW: (s: string, fs: number) => number,
+): string[] {
+  if (text.length === 0) return [''];
+  // Honour explicit newlines first, then greedy-wrap each segment.
+  const segments = text.split('\n');
+  const out: string[] = [];
+  for (const seg of segments) {
+    if (seg.length === 0) {
+      out.push('');
+      continue;
+    }
+    let cur = '';
+    for (const ch of seg) {
+      const next = cur + ch;
+      if (cur.length > 0 && measureW(next, fontSize) > wrapW) {
+        out.push(cur);
+        cur = ch;
+      } else {
+        cur = next;
+      }
+    }
+    if (cur.length > 0 || out.length === 0) out.push(cur);
+  }
+  return out;
+}
+
 export interface HouseOptions {
   /** Stable id used for deterministic tint. */
   ownerId: string;
@@ -217,9 +251,23 @@ export class House {
     // (invisible against the night sky). Now we use a generous +56
     // safety pad and a higher floor so the visible ribbon ALWAYS
     // covers the rendered glyph run.
+    //
+    // §H1 (S-438): the S-437 hard-clamp clamped the RIBBON width to
+    // the slot but left the rasterized Pixi.Text natural-width
+    // unbounded, so on narrow 6p × 375 back-row slots the bold-700
+    // PingFang SC fallback overshot the ribbon and the rendered
+    // glyph run extended past the slot edge — visible as plaque
+    // text spilling off the canvas-right edge ('counter#2' → 'ter#2'
+    // off-canvas) and invading the canvas-left band ('玩家91' →
+    // '玩...' clipped). Fix: enable Pixi's `wordWrap: true` +
+    // `breakWords: true` with `wordWrapWidth = renderableTextW` so
+    // the rasterized texture is hard-bounded to the slot. Long
+    // displayNames wrap to a 2nd line ('counter#2' →
+    // 'counter\n#2') instead of overflowing horizontally; Pixi.Text
+    // .text remains exactly equal to bot.displayName (no ellipsis,
+    // no truncation), satisfying the acceptance contract.
     this.plaque.removeChildren();
     const plaqueY = roofTop - 32;
-    const plaqueH = 28;
     const namePool = opts.ownerName ?? '';
     const fontFamily =
       'ui-sans-serif, "PingFang SC", "Microsoft YaHei", sans-serif';
@@ -278,7 +326,12 @@ export class House {
     // until it fits or we hit floor=7. The ribbon width is then
     // sized to the *post-shrink* measureText result so it always
     // covers the rendered glyph run with no truncation.
-    const buildStyle = (fs: number): TextStyle =>
+    // §H1 (S-438): when `wrapW` is positive the TextStyle requests
+    // word-wrap (with breakWords=true so single-token names like
+    // 'counter#2' break at character boundaries). When wrapW is 0
+    // we render single-line — the only callers that pass 0 are the
+    // shrink-loop measurement passes that need the natural advance.
+    const buildStyle = (fs: number, wrapW = 0): TextStyle =>
       new TextStyle({
         fontFamily,
         fontSize: fs,
@@ -290,6 +343,15 @@ export class House {
         // texture canvas covers the full rasterized run including the
         // trailing bearing on any font fallback.
         padding: 8,
+        align: 'center',
+        ...(wrapW > 0
+          ? {
+              wordWrap: true,
+              wordWrapWidth: wrapW,
+              breakWords: true,
+              lineHeight: Math.ceil(fs * 1.15),
+            }
+          : {}),
       });
     const measurePixiTextW = (str: string, fs: number): number => {
       try {
@@ -346,28 +408,26 @@ export class House {
     const measuredW = measurePixiTextW(namePool, fontSize);
     const renderedW = Math.ceil(measuredW) + 24;
 
-    const text = new Text({
-      text: namePool,
-      style: buildStyle(fontSize),
-    });
-    text.anchor.set(0.5);
-    text.position.set(0, plaqueY + plaqueH / 2);
-
-    // Ribbon width: ≥ renderedW + 16 px padding (8 each side). The
-    // shrink loop above already chose the largest fontSize that fits
-    // `cap` (= min(stationW * 0.95, generous_default)), so for normal
-    // names the ribbon naturally fits inside the station slot. §H1
-    // (S-437): on the worst case (6p × 375 mobile, 'counter#2' in a
-    // ~55 px slot) the loop floors at fontSize=5 and the text may
-    // still slightly exceed the cap. Previously we let the ribbon
-    // overflow ('plaque honesty') — but that pushed the outermost
-    // plaque past the canvas right edge (the iter-58 regression).
-    // Now we hard-clamp the ribbon to the station budget when one is
-    // supplied so neither the ribbon nor the rasterized text texture
-    // (whose width is bounded by `cap`) extends past `stationW`. The
-    // text's TextStyle `padding: 8` keeps glyph bearings inside the
-    // texture; a 1-px text trim against the slot edge is a worse
-    // outcome than the entire rightmost plaque sitting off-screen.
+    // §H1 (S-438) — Ribbon width derivation.
+    //
+    // We commit a final plaqueW THEN build the Pixi.Text with
+    // `wordWrap: true, wordWrapWidth = plaqueW - 2*innerPad,
+    // breakWords: true` so the rasterized texture is hard-bounded
+    // to the slot. Any displayName whose natural advance at the
+    // chosen fontSize would overflow the slot wraps to a 2nd line
+    // (e.g. 'counter#2' becomes 'counter\n#2') and Pixi.Text.text
+    // remains exactly === bot.displayName (no ellipsis, no
+    // truncation). The ribbon height grows with the rendered line
+    // count so the wrapped text stays inside the dark backdrop.
+    //
+    // Ribbon width policy:
+    //   • stationW supplied (5p/6p layouts): hard-clamp to the slot
+    //     budget so adjacent plaques never overlap and the outermost
+    //     plaque never extends past the canvas edge. Acceptance:
+    //     plaqueCanvasW ≤ stationW (the §H1 guard).
+    //   • stationW omitted (1..4p layouts): use the natural rendered
+    //     width with a generous floor of 180 px so legacy chunky
+    //     plaques still read.
     const padPerSide = 8;
     const minRibbon = renderedW + 2 * padPerSide;
     let plaqueW: number;
@@ -377,6 +437,30 @@ export class House {
     } else {
       plaqueW = Math.max(180, minRibbon);
     }
+
+    // wordWrapWidth: the Pixi.Text inner content area, leaving 6 px
+    // of horizontal inset between glyphs and ribbon edge. We measure
+    // the wrapped text's actual rendered width via CanvasTextMetrics
+    // and let the ribbon height stretch to fit the line count.
+    const innerInset = 6;
+    const wrapW = Math.max(20, plaqueW - 2 * innerInset);
+
+    // Compute how many lines the wrap will produce by greedy
+    // character-break simulation matching Pixi's breakWords behaviour.
+    // We can't query Pixi.Text.height in jsdom (no canvas backend),
+    // so the height calc happens in pure TS using measurePixiTextW.
+    const wrappedLines = wrapTextToWidth(namePool, wrapW, fontSize, measurePixiTextW);
+    const lineH = Math.ceil(fontSize * 1.15);
+    // Ribbon height: enough to host every wrapped line plus 8 px
+    // top/bottom inset. Floor of 28 keeps single-line plaques the
+    // same height as before so 1..4p layouts visually unchanged.
+    const plaqueH = Math.max(28, wrappedLines.length * lineH + 12);
+    const text = new Text({
+      text: namePool,
+      style: buildStyle(fontSize, wrapW),
+    });
+    text.anchor.set(0.5);
+    text.position.set(0, plaqueY + plaqueH / 2);
 
     const plaqueG = new Graphics();
     plaqueG.rect(-plaqueW / 2 - 2, plaqueY - 2, plaqueW + 4, plaqueH + 4).fill({ color: 0x2a1a14 });
