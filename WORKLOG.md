@@ -1380,3 +1380,35 @@ canvas action.
   (`./desktop-1280-action.png`)
 - pnpm test: 118/118 green. pnpm build: 235KB gzipped client (well
   under §E3's 300KB cap).
+
+## Iter-34 — S-343 (extract narrative/ module)
+
+Took the FINAL_GOAL §F file-structure debt that's been outstanding
+since iter-29. The 5-line tie pool + pullPants/chop string templates
+were inlined at engine.ts:103-125; package.json's `./narrative` export
+already pointed at a missing path. Created
+`packages/shared/src/narrative/lines.ts` exporting `tieVariants` (8
+colloquial all-equal lines, superset of the 5 inlined),
+`pullPantsTemplate(actor,target)`, `chopTemplate`, `dodgeTemplate`,
+`deathLine`, `emptyLine`, `allSameLine`, and `defaultNarrator`. Added
+`narrative/index.ts` barrel; re-exported from `shared/src/index.ts`.
+engine.ts now imports `defaultNarrator` and assigns it to its existing
+`Narrator` interface — DEFAULT_TIE_LINES + DEFAULT_NARRATOR literals
+are gone. Added `narrative/lines.test.ts` (13 cases) pinning pool size
+≥5, the exact S-343-acceptance sentence
+`pullPantsTemplate('A','B') === 'A一个箭步上前，扒下了B的裤衩'`,
+unanimity-line distinction, and ≥3 distinct sentences across 12
+rounds. ARCHITECTURE.md grew a "Narrative module" subsection
+documenting the public surface and the plug-in seam.
+
+Verification:
+- `pnpm --filter @xdyb/shared test`: 75/75 green (was 62; +13 narrative).
+- Full `pnpm test`: shared 75 + server 21 + client 35 = 131 total green.
+- `pnpm build`: client 168KB index gzip (≤ §E3 300KB cap).
+- `pnpm sim --players 4 --bots counter,random,iron,mirror --rounds 200
+  --seed 42`: 44 ties total, 4 distinct tie sentences (`齐了…同一招` 36×,
+  `一瞬间，全场齐刷刷地停了下来` 5×, `所有人都举着手，气氛凝住了` 2×,
+  `门口尘土齐飞，谁也没碰到谁` 1×). With `iron,iron,iron,iron`, same
+  4 distinct sentences appear across 200 rounds.
+- `grep DEFAULT_TIE_LINES engine.ts` → no matches; `grep 箭步上前 engine.ts`
+  → no matches. Inline strings fully evicted.

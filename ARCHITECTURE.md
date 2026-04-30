@@ -154,6 +154,47 @@ DEAD-player skipping, explicit target overrides, input non-mutation, and a
 20-round mulberry32-seeded simulation that verifies state monotonicity
 (alive count never increases) and timeline integrity across rounds.
 
+### Narrative module (FINAL_GOAL §F + §C8)
+
+`packages/shared/src/narrative/lines.ts` is the canonical home for the
+Chinese-prose surface used everywhere narration is rendered (BattleLog
+rows, sim CLI output, server `lastNarration`). Public exports:
+
+- `tieVariants: readonly string[]` — pool of ≥5 colloquial all-equal
+  lines. The default tie picker rotates through this pool with a
+  `round % pool.length` index so three consecutive ties read as three
+  distinct sentences (FINAL_GOAL §C8) while remaining deterministic
+  for the headless sim.
+- `allSameLine` — single dedicated line for the unanimity case
+  (every alive player threw the same shape).
+- `emptyLine(round)` — defensive fallback when no alive player
+  submitted a choice.
+- `pullPantsTemplate(actor, target)` — renders the rhyme's signature
+  扒裤衩 sentence: `'A一个箭步上前，扒下了B的裤衩'`.
+- `chopTemplate(actor, target)` — renders the chop sentence naming
+  the target's `家门` (FINAL_GOAL thematic-honesty rule).
+- `dodgeTemplate(actor, target)` — reserved for a future dodge
+  mechanic; rounds out the §C8 verb roster (扒/砍/闪/平/死).
+- `deathLine(target)` — terminal-elimination flavor; available for
+  callers that want to split chop+death narration.
+- `defaultNarrator: NarratorShape` — bundles the three templates the
+  engine consumes (`tie`, `pullPants`, `chop`). `engine.ts` imports
+  this and assigns it to its `Narrator` interface; the structural
+  match is asserted at the engine call site.
+
+The `Narrator` interface in `engine.ts` accepts plug-ins, so a richer
+streak-aware picker (e.g. v1's `pickTieLine` with `TIE_LINES_STREAK`)
+can be passed via `resolveRound(..., { narrator })` without changing
+the engine.
+
+Tests: `packages/shared/src/narrative/lines.test.ts` (13 cases) pins
+pool size ≥5, the exact `pullPantsTemplate('A','B')` sentence (S-343
+acceptance), unanimity-line distinction from the all-equal pool, and
+≥3 distinct sentences across 12 consecutive rounds of `defaultNarrator.tie`.
+End-to-end: a 200-round seeded sim (`pnpm sim --players 4 --bots
+counter,random,iron,mirror --rounds 200 --seed 42`) produces 4 distinct
+tie sentences across the all-equal rounds.
+
 ## Build / install pipeline
 
 ```

@@ -46,6 +46,7 @@ import type {
   RoundInputs,
 } from './types.js';
 import { resolveRps, type PlayerId, type RpsChoice, type RpsResolution } from './rps.js';
+import { defaultNarrator } from '../narrative/lines.js';
 
 /** Phase boundary (atMs offset, durationMs) — cumulatively sums to
  *  ACTION_TOTAL_MS. Computed from timing.ts so swapping the constants
@@ -100,29 +101,11 @@ export interface Narrator {
   chop: (actorName: string, targetName: string, round: number) => string;
 }
 
-const DEFAULT_TIE_LINES: ReadonlyArray<string> = [
-  '场上一阵尴尬的沉默',
-  '大家面面相觑，谁都没敢出招',
-  '风掠过门前，没人动手',
-  '所有人都举着手，气氛凝住了',
-  '一瞬间，全场齐刷刷地停了下来',
-];
-
-const DEFAULT_NARRATOR: Narrator = {
-  tie: (round, reason) => {
-    if (reason === 'empty') return `第 ${round} 回合无人出招`;
-    if (reason === 'all-same') {
-      // Unanimous — distinct flavor.
-      return '齐了！所有人不约而同地出了同一招';
-    }
-    // round-stable variant pick from the all-equal pool
-    const idx = ((round % DEFAULT_TIE_LINES.length) + DEFAULT_TIE_LINES.length) %
-      DEFAULT_TIE_LINES.length;
-    return DEFAULT_TIE_LINES[idx]!;
-  },
-  pullPants: (actor, target) => `${actor}一个箭步上前，扒下了${target}的裤衩`,
-  chop: (actor, target) => `${actor}手起刀落，一刀砍向${target}的家门`,
-};
+// Default narration is now sourced from `../narrative/lines.ts` (the
+// FINAL_GOAL §F-mandated module). The Narrator interface above and the
+// `defaultNarrator` shape there are structurally compatible — the import
+// statement at the top of this file binds them.
+const DEFAULT_NARRATOR: Narrator = defaultNarrator;
 
 export interface ResolveOptions {
   /** Plug a richer narrator from `narrative/lines.ts` once it lands. */
