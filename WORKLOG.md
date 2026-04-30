@@ -2416,3 +2416,87 @@ spans (two duplicate pairs). Two contributing causes:
   spans (verified through R2; mechanism is round-agnostic).
 - ✓ `aside.querySelectorAll('[data-row-key]').length ===
   new Set(...).size` holds.
+
+---
+
+## S-430 — palette collision fix (joinOrder-indexed N-color palette)
+
+**Bug:** A 6-bot lobby produced only 3–4 distinct hues. Pre-fix
+`playerColor(name)` did `FNV-1a(name) % 6`, so the bot nicknames
+`counter`, `random`, `iron`, `mirror`, `counter#2`, `random#2`
+all hashed onto a tiny number of slots — `counter` and `counter#2`
+both came out red, `random` and `random#2` both came out the same
+green. The judge saw two indistinguishable plaques per round.
+
+**Fix (registry + 8-slot ΔE-checked palette):**
+
+- `packages/client/src/palette.ts`:
+  - Replaced the 6-entry hue ring with an 8-entry `PLAYER_PALETTE`
+    whose pairwise CIE-Lab ΔE is **≥ 31.43** across all pairs and
+    **≥ 38.35** across the first 6 (the 6p-room slice).
+  - New `setPlayerColorMap(ids)` registry stores `id → slotIndex`.
+  - `playerColor(id)` now looks up the registry first; falls back
+    to FNV-1a → 8-slot palette for unregistered ids (tests, mid-
+    snapshot transient renders).
+  - New `resetPlayerColorMap()` test helper.
+- `packages/server/src/rooms/Room.ts`: `RoomSnapshot.players[i]`
+  gained a stable `joinOrder: number` (= members array index).
+- `packages/client/src/store/gameStore.ts`: mirrored the
+  `joinOrder` field on the client `RoomSnapshot` type.
+- `packages/client/src/pages/{Lobby,MultiGame,Game}.tsx`:
+  added a `useEffect` that calls
+  `setPlayerColorMap(players.sort(joinOrder).map(p => p.id))`
+  whenever the player list changes — so the palette assignment
+  is keyed on stable `joinOrder` not on display name.
+
+**Bonus typecheck regression fix:**
+
+- `packages/client/src/canvas/GameStage.tsx:965` emitted
+  TS2367 (`comparison appears unintentional because types
+  '2 | 3' and '1' have no overlap`). The `backCount` ternary
+  guarded an unreachable case. Reduced to
+  `const t = bi / (backCount - 1);` since the type is statically
+  `2 | 3`.
+
+**Verification:**
+
+- New `packages/client/src/palette.test.ts` (6 tests):
+  - PLAYER_PALETTE pairwise ΔE ≥ 25.
+  - 6-bot room with name collisions → 6 distinct colors,
+    pairwise ΔE ≥ 25.
+  - Registry stable across re-registration in same order.
+  - Re-registration with new order moves the assignment.
+  - Unregistered ids fall back to FNV over 8-slot palette,
+    deterministic.
+  - joinOrder index drives the assignment, not the id string.
+- `pnpm -r typecheck` → **EXIT 0**.
+- `pnpm -r test` → **133 pass** across 8 files (palette.test.ts
+  added 6 tests on top of the prior baseline).
+- `pnpm sim` → tie_rate=0.260, no infinite loops, multiple
+  winners, PULL_OWN_PANTS_UP fires.
+- `pnpm -C packages/client build` → succeeds; `dist/index.js`
+  ≈550 KB (≈175 KB gzipped); no new warnings.
+- Live Playwright MCP drive at 1280×800: created 6-bot multi
+  room (玩家37 + 5 bots: counter, random, iron, mirror, counter#2).
+  Programmatically read every chip dot via `getComputedStyle`:
+  - 玩家37 → `rgb(58,120,200)` blue
+  - counter → `rgb(232,90,42)` orange
+  - random → `rgb(56,168,104)` green
+  - iron → `rgb(200,168,56)` yellow
+  - mirror → `rgb(168,56,152)` magenta
+  - counter#2 → `rgb(56,200,200)` cyan
+  All 6 distinct; the prior `counter`/`counter#2` collision
+  (both `rgb(200,56,56)`) is gone.
+- Screenshot `s430-multi-6p-init.png` shows 6 visually
+  distinct house roofs and 6 visually distinct shirt fills
+  on the in-canvas characters. (WebGPU canvas without
+  `preserveDrawingBuffer` returns black on
+  `toDataURL` so we used the screenshot as the in-canvas
+  evidence; the chip-dot path is the programmatic guarantee.)
+
+**Acceptance per S-430 brief:**
+- ✓ 6-bot room produces 6 distinct chip / roof / shirt colors.
+- ✓ Pairwise ΔE ≥ 25 holds for every active 6-room slice.
+- ✓ Picked **option (a)**: fixed N-color palette indexed by
+  `joinOrder` (the explicit alternative the brief allowed).
+- ✓ TS2367 in GameStage.tsx:965 cleared.

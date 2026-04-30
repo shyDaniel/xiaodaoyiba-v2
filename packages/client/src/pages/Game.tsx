@@ -32,7 +32,7 @@ import {
   type LogVerb,
   useIsMobile,
 } from '../components/BattleLog.js';
-import { palette, toCss, playerColor } from '../palette.js';
+import { palette, toCss, playerColor, setPlayerColorMap } from '../palette.js';
 import {
   isMuted as audioIsMuted,
   setMuted as audioSetMuted,
@@ -198,6 +198,15 @@ export function GamePage({ onExit }: { onExit?: () => void } = {}): JSX.Element 
       })),
     [playerStates],
   );
+
+  // S-430 — register the join-order palette map for the solo roster
+  // (self + 3 bots). Solo doesn't have a network snapshot, so we feed
+  // playerStates' order directly. This drives the in-canvas Character
+  // pupil + house roof tints, the BattleLog name links, the
+  // TargetPicker borders, and the local PlayerChip dots.
+  useEffect(() => {
+    setPlayerColorMap(playerStates.map((p) => p.id));
+  }, [playerStates]);
 
   const livePlayerIds = useMemo(
     () => playerStates.filter((p) => p.stage !== 'DEAD').map((p) => p.id),

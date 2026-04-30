@@ -61,6 +61,10 @@ export interface RoomSnapshot {
     stage: PlayerState['stage'];
     isHost: boolean;
     hasSubmitted: boolean;
+    /** S-430 stable join-order index (0-based, position in members[]).
+     *  Drives the client's per-player accent palette so a 6-bot room
+     *  always has 6 distinct hues regardless of name collisions. */
+    joinOrder: number;
   }>;
   /** Last-round narration (for late joiners / reconnects); empty during LOBBY. */
   lastNarration: string;
@@ -527,7 +531,7 @@ export class Room {
       hostId: this.hostId,
       phase: this.phase,
       round: this.round,
-      players: this.members.map((m) => {
+      players: this.members.map((m, idx) => {
         const p = this.players.find((pp) => pp.id === m.id);
         return {
           id: m.id,
@@ -536,6 +540,11 @@ export class Room {
           stage: p?.stage ?? 'DEAD',
           isHost: m.id === this.hostId,
           hasSubmitted: this.choices[m.id] !== undefined,
+          // S-430 — index into members[] is the canonical join order.
+          // Removals shift indices but preserve relative order, which
+          // matches the client's expectation that color stability is
+          // per-room, not per-id forever.
+          joinOrder: idx,
         };
       }),
       lastNarration: this.lastNarration,

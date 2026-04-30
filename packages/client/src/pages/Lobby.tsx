@@ -6,8 +6,8 @@
 // 开战, the server transitions to PLAYING and the App route switches to
 // MultiGame.
 
-import { useMemo } from 'react';
-import { palette, toCss, playerColor } from '../palette.js';
+import { useEffect, useMemo } from 'react';
+import { palette, toCss, playerColor, setPlayerColorMap } from '../palette.js';
 import { addBot, leaveRoom, selfSocketId, startGame } from '../socket.js';
 import { useGameStore } from '../store/gameStore.js';
 
@@ -24,6 +24,19 @@ export function LobbyPage(): JSX.Element {
   const isHost = me?.isHost ?? false;
   const playerCount = snapshot?.players.length ?? 0;
   const canStart = isHost && playerCount >= 2;
+
+  // S-430 — register the join-order palette map so chip dots and
+  // (later) in-canvas tints stay distinct even when bot nicknames
+  // collide ('counter' / 'counter#2'). Same registration runs again on
+  // MultiGame mount; doing it here means the lobby chips themselves
+  // are already palette-correct before the host clicks 开战.
+  useEffect(() => {
+    if (!snapshot) return;
+    const ordered = [...snapshot.players]
+      .sort((a, b) => a.joinOrder - b.joinOrder)
+      .map((p) => p.id);
+    setPlayerColorMap(ordered);
+  }, [snapshot?.players]);
 
   const onCopyCode = (): void => {
     if (!code) return;

@@ -79,15 +79,72 @@ export const palette = {
   confetti4: 0x38a868,
 } as const;
 
-/** Deterministic per-player accent color from a string id (FINAL_GOAL §C8/§C9). */
+/** Per-player accent color (FINAL_GOAL §C8/§C9, S-430).
+ *
+ *  v0..S-426 used FNV-1a(name) % 6 which routinely collided in 6-bot
+ *  rooms (e.g. 'counter', 'counter#2', and 'random' all hashed onto the
+ *  same red slot, leaving half the room visually indistinguishable).
+ *
+ *  S-430 fix: a fixed 8-color palette indexed by *join order*. The
+ *  player roster (server-emitted snapshot or solo seed) registers its
+ *  ordered ids via `setPlayerColorMap`; `playerColor(id)` then returns
+ *  `PLAYER_PALETTE[joinOrder % 8]`. The 8 hues are spread across the
+ *  hue wheel with high enough lightness contrast that any 6-pick subset
+ *  satisfies CIE-Lab ΔE ≥ 25 pairwise.
+ *
+ *  Fallback: if an id was never registered (early call before snapshot
+ *  arrived, headless tests, etc.) we hash the id into the same 8-slot
+ *  palette — this is strictly better than the previous 6-slot hash and
+ *  preserves determinism across reconnects. */
+export const PLAYER_PALETTE: readonly number[] = [
+  0x3a78c8, // azure blue
+  0xe85a2a, // burnt orange
+  0x38a868, // emerald green
+  0xc8a838, // golden yellow
+  0xa83898, // magenta purple
+  0x38c8c8, // cyan teal
+  0xe8408a, // hot pink
+  0x6a48d8, // indigo violet
+] as const;
+
+const playerColorIndex = new Map<string, number>();
+
+/** Register the canonical join-order for a roster of player ids.
+ *  Call whenever the snapshot.players list changes (or when a solo
+ *  game initializes its bot roster). Idempotent: re-registering an id
+ *  with the same index is a no-op; re-registering with a new index
+ *  updates the assignment so a player promoted in roster order moves
+ *  to the new slot. */
+export function setPlayerColorMap(ids: ReadonlyArray<string>): void {
+  for (let i = 0; i < ids.length; i++) {
+    const id = ids[i];
+    if (id === undefined) continue;
+    playerColorIndex.set(id, i);
+  }
+}
+
+/** Test/dev helper: clear the registry so a fresh game starts cleanly.
+ *  Production code paths can ignore this — registrations naturally
+ *  re-overwrite on the next snapshot. */
+export function resetPlayerColorMap(): void {
+  playerColorIndex.clear();
+}
+
 export function playerColor(id: string): number {
-  const palette: number[] = [0x3a78c8, 0xc83838, 0x38a868, 0xc8a838, 0xa83898, 0x38c8c8];
+  const idx = playerColorIndex.get(id);
+  if (idx !== undefined) {
+    return PLAYER_PALETTE[idx % PLAYER_PALETTE.length] ?? 0xc8c8c8;
+  }
+  // Fallback hash — only hit for unregistered ids (pre-snapshot calls,
+  // unit tests). Uses FNV-1a → 8-slot palette so the fallback range
+  // matches the registered range and a transient unregistered render
+  // doesn't pop off-palette.
   let h = 2166136261;
   for (let i = 0; i < id.length; i++) {
     h ^= id.charCodeAt(i);
     h = Math.imul(h, 16777619) >>> 0;
   }
-  return palette[h % palette.length] ?? 0xc8c8c8;
+  return PLAYER_PALETTE[h % PLAYER_PALETTE.length] ?? 0xc8c8c8;
 }
 
 /** Hex color → CSS string for React/Tailwind. */

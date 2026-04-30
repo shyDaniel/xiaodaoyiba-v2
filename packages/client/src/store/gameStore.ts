@@ -43,6 +43,10 @@ export interface RoomSnapshot {
     stage: PlayerState['stage'];
     isHost: boolean;
     hasSubmitted: boolean;
+    /** S-430 stable join-order index (0-based). Drives the per-player
+     *  accent palette so name collisions ('counter' / 'counter#2')
+     *  don't collapse onto the same colour. */
+    joinOrder: number;
   }>;
   lastNarration: string;
   winnerId: string | null;

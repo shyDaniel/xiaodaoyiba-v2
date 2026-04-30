@@ -35,7 +35,7 @@ import {
   type LogVerb,
   useIsMobile,
 } from '../components/BattleLog.js';
-import { palette, toCss, playerColor } from '../palette.js';
+import { palette, toCss, playerColor, setPlayerColorMap } from '../palette.js';
 import {
   isMuted as audioIsMuted,
   setMuted as audioSetMuted,
@@ -146,6 +146,21 @@ export function MultiGamePage(): JSX.Element {
     setPickerPhase('target');
     setPickedTarget(null);
   }, [winnerChoice?.round, winnerChoice?.winnerId]);
+
+  // S-430 register the join-order → palette map so every consumer of
+  // `playerColor(id)` (lobby chip dot, in-canvas Character pupil + house
+  // roof tint, RevealGlyphs ring, BattleLog name link, TargetPicker
+  // border) returns the same hue per slot. Re-run whenever the roster
+  // changes (lobby joins, mid-game disconnects). Sorting by joinOrder
+  // first keeps client + server in lockstep even if the snapshot ever
+  // reorders members[].
+  useEffect(() => {
+    if (!snapshot) return;
+    const ordered = [...snapshot.players]
+      .sort((a, b) => a.joinOrder - b.joinOrder)
+      .map((p) => p.id);
+    setPlayerColorMap(ordered);
+  }, [snapshot?.players]);
 
   // (Build of PlayerState[] used to live here as a useCallback. S-426
   // moved that lookup inside the drain effect — reading from

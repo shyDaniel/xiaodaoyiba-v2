@@ -962,7 +962,11 @@ export function computeSpots(
     const slotIdx = backSlots[bi];
     if (slotIdx === undefined) continue;
     const cx = slotBandX0 + slotW * (slotIdx + 0.5);
-    const t = backCount === 1 ? 0.5 : bi / Math.max(1, backCount - 1);
+    // backCount is statically `2 | 3` (5p → 2, 6p → 3) so the singleton
+    // case never fires here; just normalize bi against (backCount - 1).
+    // S-430 fix: previous `backCount === 1` guard tripped TS2367 under
+    // strict mode because the comparison is unreachable.
+    const t = bi / (backCount - 1);
     spots.push({
       houseX: cx,
       houseY: backRowY,
