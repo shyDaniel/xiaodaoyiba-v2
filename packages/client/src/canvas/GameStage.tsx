@@ -430,6 +430,11 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
           refs.homeX.delete(id);
         }
         if (h) {
+          // §H1 (S-437): plaque was re-parented into gameplayLayer in
+          // layoutPlayers — remove + destroy it explicitly so a
+          // departing player's nameplate doesn't linger on the scene.
+          if (h.plaque.parent) h.plaque.parent.removeChild(h.plaque);
+          h.plaque.destroy({ children: true });
           refs.gameplayLayer.removeChild(h.view);
           h.view.destroy({ children: true });
           refs.houses.delete(id);
@@ -497,7 +502,12 @@ export function computeChromeMargins(
 ): { left: number; right: number } {
   const narrow = w < 768;
   if (narrow) {
-    return { left: 8, right: 8 };
+    // §H1 (S-437): reduced from 8 → 4 to maximize per-slot width on
+    // 6-bot mobile (375 canvas, 6 slots → previously 58.5 px/slot,
+    // now 60.5 px/slot). Combined with House.draw's hard ribbon-
+    // clamp + fontSize floor lowered to 5 px, the outermost
+    // 'counter#2' plaque now stays inside the canvas right edge.
+    return { left: 4, right: 4 };
   }
   return { left: 12, right: 12 };
 }
@@ -561,6 +571,21 @@ function layoutPlayers(refs: SceneRefs): void {
       house.view.position.set(spot.houseX, spot.houseY);
       house.view.scale.set(spot.scale, spot.scale);
       house.view.zIndex = rowBase;
+      // §H1 (S-437) plaque overlay: re-parent the plaque from
+      // house.view into gameplayLayer with zIndex=5000 so it always
+      // paints above EVERY house row. Otherwise back-row plaques
+      // (rowBase=0) get occluded by front-row roofs (rowBase=1000) —
+      // the iter-58 visual regression where the back-row plaques
+      // 'disappeared' behind the closer houses. The plaque is
+      // rendered in the house's pre-scale local space, so we mirror
+      // house.view.position/scale onto the plaque before it joins
+      // gameplayLayer so the ribbon lands centered over the house.
+      if (house.plaque.parent !== refs.gameplayLayer) {
+        refs.gameplayLayer.addChild(house.plaque);
+      }
+      house.plaque.position.set(spot.houseX, spot.houseY);
+      house.plaque.scale.set(spot.scale, spot.scale);
+      house.plaque.zIndex = 5000;
     }
     if (ch) {
       // Snap home position only when the character is currently at a

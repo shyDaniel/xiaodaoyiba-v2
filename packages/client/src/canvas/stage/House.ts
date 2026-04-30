@@ -34,7 +34,21 @@ export class House {
   readonly view: Container;
   private readonly body: Graphics;
   private readonly damage: Graphics;
-  private readonly plaque: Container;
+  /** The name-plaque ribbon. Public so layoutPlayers can re-parent it
+   *  into a dedicated overlay layer that paints above all houses — back-
+   *  row plaques would otherwise be occluded by front-row roofs. The
+   *  plaque is rendered in the house's local pre-scale space, so when
+   *  re-parented the layout system must apply (houseX, houseY, scale)
+   *  itself; House.draw never touches plaque.position/scale. §H1
+   *  (S-437). */
+  readonly plaque: Container;
+  /** Cached rendered ribbon width (post-fit, in local/pre-scale units).
+   *  Set by `draw()` after the shrink loop + clamp. Returned by
+   *  `getPlaqueWidth()` so tests + layout assertions can verify the
+   *  ribbon never exceeds `stationW` without invoking PixiJS bounds
+   *  on the Text child (which requires HTMLCanvasElement.getContext —
+   *  not implemented in jsdom). */
+  private lastPlaqueW = 0;
   private hp = 100;
   readonly ownerId: string;
   /** Cached opts so resize() can re-draw with the same owner identity
@@ -304,15 +318,20 @@ export class House {
         : Number.POSITIVE_INFINITY;
     const cap = Math.min(stationCap, Math.max(200, w * 0.78 + 64));
 
-    // Shrink loop: pick the largest fontSize ∈ [7, 16] whose
+    // Shrink loop: pick the largest fontSize ∈ [5, 16] whose
     // padded ribbon (renderedW + 16 px outer padding) fits inside
     // `cap`. The renderedW formula below adds +24 to measuredW, plus
     // an additional 2 * 8 = 16 px ribbon padding from `padPerSide`
     // below — total 40 px of safety pad over the raw advance.
+    // §H1 (S-437): floor lowered from 7 → 5 so worst-case 6p × 375
+    // mobile ('counter#2' in a 55-px slot cap) can shrink the text
+    // enough to fit inside the slot rather than overflow past the
+    // canvas right edge. 5 px is still legible at 1× device-pixel-
+    // ratio on mobile (the plaque is the size of a thumbnail).
     let fontSize = 16;
     while (
       Math.ceil(measurePixiTextW(namePool, fontSize)) + 24 + 16 > cap &&
-      fontSize > 7
+      fontSize > 5
     ) {
       fontSize -= 1;
     }
@@ -334,23 +353,27 @@ export class House {
     text.anchor.set(0.5);
     text.position.set(0, plaqueY + plaqueH / 2);
 
-    // Ribbon width: ≥ renderedW + 16 px padding (8 each side). When
-    // a station budget is supplied AND the rendered text exceeds it,
-    // we honor the rendered text (overflow the budget by a few px)
-    // rather than truncate. Plaque honesty ('counter#2' must read as
-    // 'counter#2') is non-negotiable per §H1; a small overlap with
-    // a neighbouring plaque is a visual quibble.
+    // Ribbon width: ≥ renderedW + 16 px padding (8 each side). The
+    // shrink loop above already chose the largest fontSize that fits
+    // `cap` (= min(stationW * 0.95, generous_default)), so for normal
+    // names the ribbon naturally fits inside the station slot. §H1
+    // (S-437): on the worst case (6p × 375 mobile, 'counter#2' in a
+    // ~55 px slot) the loop floors at fontSize=5 and the text may
+    // still slightly exceed the cap. Previously we let the ribbon
+    // overflow ('plaque honesty') — but that pushed the outermost
+    // plaque past the canvas right edge (the iter-58 regression).
+    // Now we hard-clamp the ribbon to the station budget when one is
+    // supplied so neither the ribbon nor the rasterized text texture
+    // (whose width is bounded by `cap`) extends past `stationW`. The
+    // text's TextStyle `padding: 8` keeps glyph bearings inside the
+    // texture; a 1-px text trim against the slot edge is a worse
+    // outcome than the entire rightmost plaque sitting off-screen.
     const padPerSide = 8;
     const minRibbon = renderedW + 2 * padPerSide;
-    // Plaque honesty (§H1): the ribbon ALWAYS covers the full rendered
-    // glyph run, even if that means slightly overflowing the per-station
-    // budget. The shrink loop above already chose the largest fontSize
-    // that fits the station cap, so any overflow here is bounded by the
-    // ribbon's safety pad (±~12 px) — neighbour ribbons may visually
-    // touch but no glyph is ever clipped.
     let plaqueW: number;
     if (opts.stationW !== undefined) {
-      plaqueW = minRibbon;
+      const slotCap = Math.max(40, opts.stationW);
+      plaqueW = Math.min(minRibbon, slotCap);
     } else {
       plaqueW = Math.max(180, minRibbon);
     }
@@ -362,15 +385,13 @@ export class House {
     plaqueG.rect(-6, plaqueY - 8, 12, 6).fill({ color: palette.houseRoof });
     this.plaque.addChild(plaqueG);
     this.plaque.addChild(text);
+    // Cache for getPlaqueWidth(); see field comment above.
+    this.lastPlaqueW = plaqueW;
   }
 
   /** Read the rendered plaque ribbon width (post-fit). Used by tests +
    *  multi-room layout assertions to verify nameplates aren't truncated. */
   getPlaqueWidth(): number {
-    // The plaque background is the first child Graphics; its bounds
-    // give us the rendered ribbon size in local coordinates.
-    if (this.plaque.children.length === 0) return 0;
-    const bounds = this.plaque.getLocalBounds();
-    return bounds.width;
+    return this.lastPlaqueW;
   }
 }

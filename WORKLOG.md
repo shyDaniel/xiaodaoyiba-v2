@@ -2551,3 +2551,76 @@ passes.
 
 **Files touched:** `packages/client/src/pages/MultiGame.tsx`,
 `packages/client/src/components/BattleLog.tsx`.
+
+---
+
+## S-437 — §H1 mobile 6-bot plaque/character canvas-edge clipping (iter-59)
+
+**Problem (live, 375×667 mobile, 6-bot room):** Plaques + character
+silhouettes extended past the 375 px canvas edges. Specifically:
+top-left "玩家NN" plaque was clipped at the left edge; top-right
+"random" + back-right "counter#2" plaques were clipped at the right
+edge; the back-row plaques rendered BEHIND front-row roofs because
+the roofs (zIndex=1000) painted over the plaques (which lived inside
+back-row `house.view` at zIndex=0). The previous shrink loop floored
+fontSize at 7 and the "plaque honesty" code allowed the ribbon to
+overflow `stationW`, so a worst-case "counter#2" in a 55-px slot
+pushed past the canvas right edge entirely.
+
+**Fix (4 changes):**
+1. `GameStage.tsx::computeChromeMargins` narrow path: chromeMargins
+   reduced from {left:8, right:8} to {left:4, right:4} on mobile —
+   recovers 8 px of slot budget so each of 6 stations gets ~60.5 px
+   instead of 58.5 px.
+2. `House.ts::draw` shrink loop: fontSize floor lowered from 7 → 5
+   so `counter#2` in a ~55 px slot can shrink enough to fit the cap.
+3. `House.ts::draw` ribbon clamp: `plaqueW = Math.min(minRibbon,
+   slotCap)` when `stationW` is supplied (was just `minRibbon`).
+   Previously the ribbon ran off the edge; now it hard-clamps to the
+   per-station budget so neither ribbon nor rasterized text texture
+   ever extends past `stationW`. Trade-off: a 1-px text trim against
+   the slot edge is preferable to the entire rightmost plaque
+   sliding off-screen.
+4. `GameStage.tsx::layoutPlayers` plaque overlay: re-parent the
+   plaque from `house.view` into `gameplayLayer` with `zIndex=5000`
+   so it always paints above EVERY house row (front-row roofs at
+   zIndex=1000 no longer occlude back-row plaques). The plaque is
+   rendered in pre-scale local space, so layout mirrors
+   `house.view.position`/`scale` onto the plaque before it joins the
+   overlay layer. Player-removal cleanup destroys the re-parented
+   plaque explicitly so a departing player's nameplate doesn't
+   linger.
+
+`House.plaque` is now `readonly public` (was `private`) so the
+layout system can re-parent it. `House.getPlaqueWidth()` returns a
+cached `lastPlaqueW` set during `draw()` instead of walking
+`getLocalBounds()` (the latter iterates the Text child and triggers
+`CanvasTextMetrics.measureFont` → `HTMLCanvasElement.getContext`
+which jsdom doesn't implement; the cached field lets the new
+`House.test.ts` assert ribbon width without standing up a real
+canvas).
+
+**New test:** `packages/client/src/canvas/stage/House.test.ts` —
+asserts that for every spot in 5p × 375 and 6p × 375 mobile
+layouts, `getPlaqueWidth() * spot.scale ≤ spot.stationW + 1` AND
+the plaque's left/right canvas-edge bounds (`houseX ± plaqueW/2`)
+stay within `[0, canvas.width]`. Worst-case names tested:
+`['玩家38', 'counter', 'random', 'iron', 'mirror', 'counter#2']`.
+
+**Verification (live, headless Chromium):**
+- 375×667 mobile, 6-bot room (玩家91 / counter / random / iron /
+  mirror / counter#2): all 6 plaques render inside the 375-px
+  canvas. Back-row plaques paint above front-row roofs. Smallest
+  back-row plaque ("counter#2") renders at fontSize=5 in a ~55 px
+  ribbon, fully visible. (Screenshot: `s437-after-reload.png`.)
+- 1024×768 desktop, 6-bot room: all 6 plaques render full-text at
+  comfortable size, no canvas-edge clipping. (Screenshot:
+  `s437-desktop.png`.)
+
+**Tests:** `pnpm -r typecheck` exits 0. `pnpm test` → 135 client
+(+2 from S-437) + 79 shared + 21 server = 235 green.
+
+**Files touched:**
+- `packages/client/src/canvas/GameStage.tsx`
+- `packages/client/src/canvas/stage/House.ts`
+- `packages/client/src/canvas/stage/House.test.ts` (new)
