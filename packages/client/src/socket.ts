@@ -11,8 +11,12 @@
 // `error` change as messages arrive.
 
 import { io, type Socket } from 'socket.io-client';
-import type { Effect, RpsChoice } from '@xdyb/shared';
-import type { RoomSnapshot, RoundBroadcast } from './store/gameStore.js';
+import type { ActionKind, Effect, RpsChoice } from '@xdyb/shared';
+import type {
+  RoomSnapshot,
+  RoundBroadcast,
+  WinnerChoicePrompt,
+} from './store/gameStore.js';
 import { useGameStore } from './store/gameStore.js';
 
 let socket: Socket | null = null;
@@ -86,6 +90,9 @@ export function connect(url: string = defaultUrl()): Socket {
       } satisfies RoundBroadcast);
     },
   );
+  s.on('room:winnerChoice', (prompt: WinnerChoicePrompt) => {
+    store().setWinnerChoice(prompt);
+  });
   s.on('room:error', (err: ServerErrorPayload) => {
     store().setError(`${err.code}: ${err.message}`);
   });
@@ -133,6 +140,18 @@ export function startGame(): void {
 
 export function submitChoice(choice: RpsChoice): void {
   require_().emit('room:choice', { choice });
+}
+
+/** §H3 reply to an open room:winnerChoice prompt. Either field may be
+ *  null = let the server engine auto-pick. The client store's
+ *  winnerChoice slot is cleared locally so the picker UI hides
+ *  immediately. */
+export function submitWinnerChoice(
+  target: string | null,
+  action: ActionKind | null,
+): void {
+  require_().emit('room:winnerChoice', { target, action });
+  useGameStore.getState().clearWinnerChoice();
 }
 
 export function rematch(): void {

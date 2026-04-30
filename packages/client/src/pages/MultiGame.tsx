@@ -18,13 +18,15 @@
 //      that emits room:rematch.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Effect, PlayerState, RpsChoice } from '@xdyb/shared';
+import type { ActionKind, Effect, PlayerState, RpsChoice } from '@xdyb/shared';
 import {
   GameStage,
   type StageController,
   type StagePlayer,
 } from '../canvas/GameStage.js';
 import { HandPicker } from '../components/HandPicker.js';
+import { TargetPicker, type TargetCandidate } from '../components/TargetPicker.js';
+import { ActionPicker } from '../components/ActionPicker.js';
 import {
   BattleLog,
   type LogEntry,
@@ -46,6 +48,7 @@ import {
   rematch,
   selfSocketId,
   submitChoice as socketSubmitChoice,
+  submitWinnerChoice as socketSubmitWinnerChoice,
 } from '../socket.js';
 import { useGameStore } from '../store/gameStore.js';
 
@@ -62,8 +65,15 @@ const PHASE_INFOS: Record<PhaseLabel, { label: string; hint: string }> = {
 export function MultiGamePage(): JSX.Element {
   const snapshot = useGameStore((s) => s.snapshot);
   const pendingRounds = useGameStore((s) => s.pendingRounds);
+  const winnerChoice = useGameStore((s) => s.winnerChoice);
   const code = useGameStore((s) => s.code);
   const meId = selfSocketId();
+
+  /** §H3 picker phase machine — starts in 'target' on every fresh
+   *  prompt; advances to 'action' when winner can self-restore or has
+   *  picked a target. */
+  const [pickerPhase, setPickerPhase] = useState<'target' | 'action'>('target');
+  const [pickedTarget, setPickedTarget] = useState<string | null>(null);
 
   const [pick, setPick] = useState<RpsChoice | null>(null);
   const [muted, setMuted] = useState<boolean>(() => audioIsMuted());
@@ -116,6 +126,13 @@ export function MultiGamePage(): JSX.Element {
       lastSubmittedRound.current = null;
     }
   }, [snapshot?.round]);
+
+  // §H3 reset picker machine whenever a new winner-choice prompt arrives
+  // (or when one is cleared after submission).
+  useEffect(() => {
+    setPickerPhase('target');
+    setPickedTarget(null);
+  }, [winnerChoice?.round, winnerChoice?.winnerId]);
 
   // Build PlayerState[] from snapshot for EffectPlayer.play(). We need this
   // shape (not the snapshot's player rows) because EffectPlayer reads
@@ -269,6 +286,42 @@ export function MultiGamePage(): JSX.Element {
       playSfx('tap');
     },
     [snapshot, me, animatingRound],
+  );
+
+  // §H3 target picker callback. Null = timeout → fall through to engine
+  // auto-pick by submitting (null, null). When the target is picked AND
+  // the winner can self-restore, advance to the action picker so 穿好裤衩
+  // remains an option; otherwise the action defaults from target stage
+  // and we can submit immediately.
+  const onTargetPick = useCallback(
+    (targetId: string | null) => {
+      if (!winnerChoice) return;
+      if (targetId === null) {
+        socketSubmitWinnerChoice(null, null);
+        return;
+      }
+      setPickedTarget(targetId);
+      if (winnerChoice.canSelfRestore) {
+        setPickerPhase('action');
+      } else {
+        socketSubmitWinnerChoice(targetId, null);
+      }
+    },
+    [winnerChoice],
+  );
+
+  const onActionPick = useCallback(
+    (action: ActionKind | null) => {
+      if (!winnerChoice) return;
+      // PULL_OWN_PANTS_UP is self-targeted — engine ignores `target` for
+      // it but we send null to keep payload compact.
+      if (action === 'PULL_OWN_PANTS_UP') {
+        socketSubmitWinnerChoice(null, action);
+      } else {
+        socketSubmitWinnerChoice(pickedTarget, action);
+      }
+    },
+    [winnerChoice, pickedTarget],
   );
 
   // Derived UI phase label. Server's snapshot.phase is coarse (LOBBY /
@@ -547,6 +600,59 @@ export function MultiGamePage(): JSX.Element {
           );
         })}
       </div>
+
+      {/* §H3 winner-agency pickers — only the local human winner sees
+          the overlay; bots / non-winners get nothing. */}
+      {winnerChoice && winnerChoice.winnerId === meId ? (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 30,
+            pointerEvents: 'none',
+          }}
+        >
+          {pickerPhase === 'target' ? (
+            <TargetPicker
+              candidates={winnerChoice.candidates
+                .filter((c) => c.stage !== 'DEAD')
+                .map(
+                  (c): TargetCandidate => ({
+                    id: c.id,
+                    nickname: c.nickname,
+                    stage: c.stage as 'ALIVE_CLOTHED' | 'ALIVE_PANTS_DOWN',
+                  }),
+                )}
+              timeoutMs={winnerChoice.budgetMs}
+              onPick={onTargetPick}
+            />
+          ) : (
+            (() => {
+              const targetCand = winnerChoice.candidates.find(
+                (c) => c.id === pickedTarget,
+              );
+              const targetStage =
+                targetCand && targetCand.stage !== 'DEAD'
+                  ? (targetCand.stage as 'ALIVE_CLOTHED' | 'ALIVE_PANTS_DOWN')
+                  : undefined;
+              const winnerStage =
+                winnerChoice.winnerStage === 'DEAD'
+                  ? 'ALIVE_CLOTHED'
+                  : (winnerChoice.winnerStage as
+                      | 'ALIVE_CLOTHED'
+                      | 'ALIVE_PANTS_DOWN');
+              return (
+                <ActionPicker
+                  winnerStage={winnerStage}
+                  targetStage={targetStage}
+                  timeoutMs={winnerChoice.budgetMs}
+                  onPick={onActionPick}
+                />
+              );
+            })()
+          )}
+        </div>
+      ) : null}
 
       <BattleLog entries={logEntries} />
 

@@ -1569,3 +1569,91 @@ canvas overlay) so they all share the same FINAL_GOAL §A5 timing source.
   the reveal hold via playwright on a 1280×800 desktop viewport)
   all show four ROCK badges — one above each alive player's house —
   identical between frames, so the §H2 hold is steady.
+
+---
+
+## Iteration 41 — winner-agency pickers wired into multiplayer (S-374)
+
+**What:** Built the §H3/§H4 winner-agency UI and wired it through both
+solo (Game.tsx) and networked (MultiGame.tsx) flows. A local human
+winner now sees a TargetPicker overlay listing every alive loser as a
+clickable card; if the chosen target's stage permits more than the
+default action — or the winner's own stage is `ALIVE_PANTS_DOWN` —
+the flow advances to an ActionPicker offering 扒裤衩 / 咔嚓 / 穿好裤衩
+as appropriate. Both pickers honor a 5s budget; ignoring or timing
+out yields `onPick(null)` and the engine's auto-pick takes over. Bots
+and non-winning humans see no overlay.
+
+**Files added:**
+- `packages/client/src/components/TargetPicker.tsx` — pulse-gold
+  modal listing target cards with `data-testid="target-{id}"`.
+  Independent countdown bar driven by `setInterval(100)`.
+- `packages/client/src/components/ActionPicker.tsx` — three-button
+  modal whose options are filtered by predicates:
+  `PULL_PANTS` ⇐ target ALIVE_CLOTHED, `CHOP` ⇐ target ALIVE_PANTS_DOWN,
+  `PULL_OWN_PANTS_UP` ⇐ winner ALIVE_PANTS_DOWN. Same countdown UX.
+- `packages/client/src/components/pickers.test.tsx` — 7 vitest cases
+  driven through `react-dom/client` + `act()` (no
+  `@testing-library/react` in tree); covers click→onPick(id), timeout
+  → onPick(null), empty-candidate null render, action-availability
+  predicates.
+
+**Files changed:**
+- `packages/client/src/pages/Game.tsx` — adds a `'PICK'` UI phase
+  and a Promise-based picker bridge inside `submitChoice`. After
+  `resolveRps` previews the winner, the human-winner path awaits a
+  picker resolution, then passes `inputs.targets` + `inputs.actions`
+  into `resolveRound`. Bot winners or no-agency rounds skip straight
+  to resolution.
+- `packages/client/src/pages/MultiGame.tsx` — subscribes to
+  `winnerChoice` from the gameStore. While a prompt is active and
+  addressed to the local socket, mounts TargetPicker → ActionPicker
+  in the same `<div role="dialog">` overlay. `onTargetPick` advances
+  to the action stage iff `canSelfRestore`; otherwise commits the
+  pick immediately. `onActionPick` sends `null` target for
+  PULL_OWN_PANTS_UP since the engine treats actor-as-target for that
+  verb (FINAL_GOAL §H4).
+- `packages/client/src/store/gameStore.ts` — exports
+  `WinnerChoicePrompt` interface, adds `winnerChoice` slot +
+  `setWinnerChoice` / `clearWinnerChoice` actions. Cleared on
+  `setRoom` and `clearRoom` so stale prompts can't bleed into a new
+  room.
+- `packages/client/src/socket.ts` — adds `room:winnerChoice`
+  inbound listener (pushes prompt into store), exposes
+  `submitWinnerChoice(target, action)` which emits
+  `room:winnerChoice` and clears the local store slot so the picker
+  unmounts immediately rather than waiting for a server snapshot.
+- `packages/server/src/rooms/Room.ts` — opens a "winner-choice
+  window" between `submitChoice`'s all-submitted check and round
+  resolution. `openWinnerChoiceWindow()` runs `resolveRps` to find
+  human winners with meaningful agency (≥2 candidate targets OR
+  self-restore unlocked), emits a `WinnerChoicePrompt` per winner
+  via the new optional `RoomBroadcaster.emitWinnerChoice`, and
+  arms a 5s `setTimeout` fallback. `submitWinnerChoice()` records
+  the reply and closes the window early once every awaited winner
+  has answered. `resolveCurrentRound()` consumes
+  `pendingWinnerChoices` and forwards them as `inputs.targets` +
+  `inputs.actions`. `remove()` releases stuck winner slots when a
+  human disconnects mid-pick.
+- `packages/server/src/index.ts` — adds `room:winnerChoice` socket
+  handler (validates `target: string|null`, `action: ActionKind|null`),
+  wires the new `emitWinnerChoice(socketId, prompt)` broadcaster
+  method using `io.to(socketId).emit(...)` so prompts reach only the
+  intended winner.
+
+**Notes on contract preservation:**
+- `RoomBroadcaster.emitWinnerChoice` is **optional**. Existing
+  Room tests (which install a custom broadcaster) keep compiling
+  and continue to exercise the no-agency fallback path through
+  `openWinnerChoiceWindow → resolveCurrentRound`.
+- The engine signature is unchanged. `RoundInputs.actions` and
+  `RoundInputs.targets` were already in `@xdyb/shared` from S-351;
+  this iteration is pure plumbing on top of that contract.
+- PULL_OWN_PANTS_UP path emits `verb: '穿'` already (see
+  `narrative/lines.ts`); the BattleLog row format is unchanged.
+
+**Verification:**
+- `pnpm -r typecheck` exits 0.
+- `pnpm -r test` → 142/142 (shared 79; server 21; client +7 new
+  picker cases for 42 total).
+- `pnpm -r build` exits 0; client bundle 539KB (no regression).

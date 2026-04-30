@@ -12,6 +12,8 @@
 import {
   ROUND_TOTAL_MS,
   TIE_NARRATION_HOLD_MS,
+  resolveRps,
+  type ActionKind,
   type BotKind,
   type BotStrategy,
   type Effect,
@@ -25,6 +27,11 @@ import {
   resolveRound,
   seededRng,
 } from '@xdyb/shared';
+
+/** §H3 max time the room waits for human winners to submit a target+action
+ *  before falling back to engine auto-pick. Mirrors the client picker
+ *  budget so a client that ignores the window doesn't stall the room. */
+const WINNER_CHOICE_BUDGET_MS = 5000;
 
 export interface RoomMember {
   /** Stable id; matches socket.id for humans, derived id for bots. */
@@ -69,10 +76,33 @@ export interface RoundBroadcast {
   winnerId: string | null;
 }
 
+/** §H3 winner-agency prompt — sent to each human winner after RPS
+ *  resolves but before the action timeline plays. Listing of eligible
+ *  losers and whether the SELF action is unlocked. The client renders a
+ *  TargetPicker / ActionPicker and emits room:winnerChoice within
+ *  WINNER_CHOICE_BUDGET_MS or accepts the auto-pick. */
+export interface WinnerChoicePrompt {
+  round: number;
+  winnerId: string;
+  winnerStage: PlayerState['stage'];
+  candidates: ReadonlyArray<{
+    id: string;
+    nickname: string;
+    stage: PlayerState['stage'];
+  }>;
+  /** True iff winner.stage === ALIVE_PANTS_DOWN — unlocks 穿好裤衩. */
+  canSelfRestore: boolean;
+  budgetMs: number;
+}
+
 export interface RoomBroadcaster {
   emitSnapshot(snapshot: RoomSnapshot): void;
   emitRound(payload: RoundBroadcast): void;
   emitError(socketId: string, message: string): void;
+  /** Send a winner-agency prompt to one specific socket. Optional to
+   *  preserve backward compat with broadcasters that haven't been
+   *  updated; missing implementation = engine auto-pick everywhere. */
+  emitWinnerChoice?(socketId: string, prompt: WinnerChoicePrompt): void;
 }
 
 export interface RoomOptions {
@@ -98,6 +128,19 @@ export class Room {
   private phase: RoomSnapshot['phase'] = 'LOBBY';
   private round = 0;
   private lastNarration = '';
+  /** §H3 collected winner choices for the in-flight round. Populated
+   *  via submitWinnerChoice(); consumed when the choice window closes
+   *  (either all human winners replied, or budget elapsed). */
+  private pendingWinnerChoices: Record<
+    string,
+    { target: string | null; action: ActionKind | null }
+  > = {};
+  /** Set of human-winner ids we are waiting on this round. Empty when
+   *  no choice window is open. */
+  private awaitingWinners: Set<string> = new Set();
+  /** Timer that fires the auto-pick fallback when the choice window
+   *  expires. Reset every round. */
+  private winnerChoiceTimer: ReturnType<typeof setTimeout> | null = null;
   private winnerId: string | null = null;
   private readonly broadcaster: RoomBroadcaster;
 
@@ -188,6 +231,12 @@ export class Room {
     this.members.splice(idx, 1);
     this.players = this.players.filter((p) => p.id !== id);
     delete this.choices[id];
+    delete this.pendingWinnerChoices[id];
+    if (this.awaitingWinners.delete(id) && this.awaitingWinners.size === 0) {
+      // The departing player was the last winner blocking the choice
+      // window; close it so the round can advance.
+      this.closeWinnerChoiceWindow();
+    }
     if (this.hostId === id && this.members.length > 0) {
       // Promote the first remaining human as new host; if no humans left,
       // pick the first member.
@@ -230,7 +279,28 @@ export class Room {
     this.choices[actorId] = choice;
     this.broadcastSnapshot();
     if (this.allAliveSubmitted()) {
-      this.resolveCurrentRound();
+      this.openWinnerChoiceWindow();
+    }
+    return true;
+  }
+
+  /** §H3 a human winner submits their target+action choice. Either field
+   *  may be null = leave it to engine auto-pick. Once every awaited
+   *  winner has answered, the round resolves immediately (don't wait for
+   *  the budget to expire). */
+  submitWinnerChoice(
+    actorId: string,
+    payload: { target: string | null; action: ActionKind | null },
+  ): boolean {
+    if (this.phase !== 'PLAYING') return false;
+    if (!this.awaitingWinners.has(actorId)) return false;
+    this.pendingWinnerChoices[actorId] = {
+      target: payload.target ?? null,
+      action: payload.action ?? null,
+    };
+    this.awaitingWinners.delete(actorId);
+    if (this.awaitingWinners.size === 0) {
+      this.closeWinnerChoiceWindow();
     }
     return true;
   }
@@ -287,8 +357,113 @@ export class Room {
     return true;
   }
 
+  /** §H3 begin the winner-choice window. Identifies human winners with
+   *  meaningful agency (≥ 2 eligible targets OR self-restore unlocked)
+   *  and broadcasts a WinnerChoicePrompt to each. Sets up a fallback
+   *  timer that closes the window with whatever choices arrived. If no
+   *  human has agency this round, resolve immediately. */
+  private openWinnerChoiceWindow(): void {
+    this.pendingWinnerChoices = {};
+    this.awaitingWinners.clear();
+    if (this.winnerChoiceTimer !== null) {
+      clearTimeout(this.winnerChoiceTimer);
+      this.winnerChoiceTimer = null;
+    }
+
+    // Preview RPS so we know the winners + losers up front. Engine's
+    // resolveRps is pure — same call resolveRound makes downstream.
+    const orderedChoices: Array<readonly [string, RpsChoice]> = [];
+    for (const p of this.players) {
+      if (p.stage === 'DEAD') continue;
+      const c = this.choices[p.id];
+      if (c === undefined) continue;
+      orderedChoices.push([p.id, c]);
+    }
+    const preview = resolveRps(orderedChoices);
+
+    // No agency on tie or empty rounds — resolve immediately.
+    if (preview.tie) {
+      this.resolveCurrentRound();
+      return;
+    }
+
+    const losers = preview.losers
+      .map((id) => this.players.find((p) => p.id === id))
+      .filter((p): p is PlayerState => Boolean(p));
+
+    // Find every human winner with meaningful agency.
+    const promptsToSend: Array<{
+      socketId: string;
+      prompt: WinnerChoicePrompt;
+    }> = [];
+    for (const winnerId of preview.winners) {
+      const member = this.members.find((m) => m.id === winnerId);
+      if (!member || member.isBot || !member.socketId) continue;
+      const winnerPlayer = this.players.find((p) => p.id === winnerId);
+      if (!winnerPlayer) continue;
+      const canSelfRestore = winnerPlayer.stage === 'ALIVE_PANTS_DOWN';
+      const hasMultipleTargets = losers.length >= 2;
+      // Even with one target the action picker can be valuable when
+      // self-restore is on the table; otherwise skip.
+      if (!hasMultipleTargets && !canSelfRestore) continue;
+      this.awaitingWinners.add(winnerId);
+      promptsToSend.push({
+        socketId: member.socketId,
+        prompt: {
+          round: this.round,
+          winnerId,
+          winnerStage: winnerPlayer.stage,
+          candidates: losers.map((p) => ({
+            id: p.id,
+            nickname: p.nickname,
+            stage: p.stage,
+          })),
+          canSelfRestore,
+          budgetMs: WINNER_CHOICE_BUDGET_MS,
+        },
+      });
+    }
+
+    if (this.awaitingWinners.size === 0) {
+      this.resolveCurrentRound();
+      return;
+    }
+
+    for (const { socketId, prompt } of promptsToSend) {
+      this.broadcaster.emitWinnerChoice?.(socketId, prompt);
+    }
+
+    // Hard deadline — even if a client never replies, the room moves
+    // forward. The engine's auto-pick takes over for any missing entry.
+    this.winnerChoiceTimer = setTimeout(() => {
+      this.closeWinnerChoiceWindow();
+    }, WINNER_CHOICE_BUDGET_MS);
+  }
+
+  /** §H3 close the winner-choice window and resolve. Idempotent — safe
+   *  to call from both the timer and the all-winners-replied path. */
+  private closeWinnerChoiceWindow(): void {
+    if (this.winnerChoiceTimer !== null) {
+      clearTimeout(this.winnerChoiceTimer);
+      this.winnerChoiceTimer = null;
+    }
+    this.awaitingWinners.clear();
+    this.resolveCurrentRound();
+  }
+
   private resolveCurrentRound(): void {
-    const inputs: RoundInputs = { choices: { ...this.choices } };
+    const targets: Record<string, string> = {};
+    const actions: Record<string, ActionKind> = {};
+    for (const [winnerId, choice] of Object.entries(this.pendingWinnerChoices)) {
+      if (choice.target !== null) targets[winnerId] = choice.target;
+      if (choice.action !== null) actions[winnerId] = choice.action;
+    }
+    this.pendingWinnerChoices = {};
+    const inputs: RoundInputs = {
+      choices: { ...this.choices },
+      targets,
+      actions,
+    };
     const result = resolveRound(this.players, this.round, inputs);
     this.players = result.players;
     this.lastNarration = result.narration;

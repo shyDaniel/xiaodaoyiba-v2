@@ -10,6 +10,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   PHASE_T_REVEAL,
   resolveRound,
+  resolveRps,
+  type ActionKind,
   type Effect,
   type PlayerState,
   type RpsChoice,
@@ -20,6 +22,8 @@ import {
   type StagePlayer,
 } from '../canvas/GameStage.js';
 import { HandPicker } from '../components/HandPicker.js';
+import { TargetPicker, type TargetCandidate } from '../components/TargetPicker.js';
+import { ActionPicker } from '../components/ActionPicker.js';
 import {
   BattleLog,
   type LogEntry,
@@ -84,10 +88,17 @@ const PHASE_INFOS: Record<string, PhaseInfo> = {
   // is shown as a glyph above their station. Pill reads "RPS" so a
   // first-time viewer knows the action timeline has not started yet.
   RPS: { label: 'RPS', hint: '同时亮拳！' },
+  // FINAL_GOAL §H3 winner-agency overlay. Holds the round until the
+  // human winner picks a target+action, with a 5s budget that falls
+  // back to engine auto-pick.
+  PICK: { label: '选择', hint: '你赢了！选目标+动作' },
   ACTION: { label: '动作', hint: '冲到对方家里！' },
   TIE: { label: '平局', hint: '再来一次！' },
   OVER: { label: '终局', hint: '游戏结束' },
 };
+
+/** Total ms budget for target+action pickers combined (FINAL_GOAL §H3). */
+const PICKER_BUDGET_MS = 5000;
 
 export function GamePage({ onExit }: { onExit?: () => void } = {}): JSX.Element {
   const [round, setRound] = useState(1);
@@ -108,6 +119,23 @@ export function GamePage({ onExit }: { onExit?: () => void } = {}): JSX.Element 
     ];
   });
   const [winnerId, setWinnerId] = useState<string | null>(null);
+  // §H3 pickers — non-null only while the human winner is making a choice.
+  const [pickerState, setPickerState] = useState<{
+    candidates: TargetCandidate[];
+    /** Set when the user picks a target (or null = engine auto). */
+    chosenTarget: string | null;
+    /** Pre-action winner stage; needed for the action picker's
+     *  PULL_OWN_PANTS_UP eligibility. */
+    winnerStage: 'ALIVE_CLOTHED' | 'ALIVE_PANTS_DOWN';
+    /** Picker phase: 'target' shows TargetPicker, 'action' shows
+     *  ActionPicker. Auto-skips target when only one candidate exists. */
+    phase: 'target' | 'action';
+    /** Resolver — invoked with {target, action} (either nullable for
+     *  engine auto). The submitChoice() awaits this Promise. */
+    resolve: (
+      r: { target: string | null; action: ActionKind | null },
+    ) => void;
+  } | null>(null);
 
   const botsRef = useRef<BotProfile[]>(makeBots());
   // Imperative handle into the canvas EffectPlayer. GameStage assigns this
@@ -193,8 +221,83 @@ export function GamePage({ onExit }: { onExit?: () => void } = {}): JSX.Element 
       setPhase('RESOLVE');
       await delay(500);
 
-      // Resolve via shared engine
-      const result = resolveRound(playerStates, round, { choices });
+      // §H3 winner-agency: if the local human is among the winners and has
+      // a meaningful choice (≥ 2 eligible targets, OR pants-down opens up
+      // the SELF action), surface the pickers BEFORE we resolve. The
+      // pickers feed `inputs.targets` + `inputs.actions` into resolveRound
+      // so the engine honors the human's pick instead of auto-filling.
+      const preview = resolveRps(
+        Object.entries(choices).filter(([id]) => {
+          const p = playerStates.find((pp) => pp.id === id);
+          return p && p.stage !== 'DEAD';
+        }) as Array<readonly [string, RpsChoice]>,
+      );
+      const selfPlayer = playerStates.find((p) => p.id === SELF_ID);
+      const userInputs: { target: string | null; action: ActionKind | null } = {
+        target: null,
+        action: null,
+      };
+      const humanIsWinner =
+        !preview.tie &&
+        preview.winners.includes(SELF_ID) &&
+        selfPlayer !== undefined &&
+        selfPlayer.stage !== 'DEAD';
+      if (humanIsWinner && selfPlayer) {
+        const losers = preview.losers
+          .map((id) => playerStates.find((p) => p.id === id))
+          .filter((p): p is PlayerState => Boolean(p) && p?.stage !== 'DEAD');
+        const losersAsCandidates: TargetCandidate[] = losers.map((p) => ({
+          id: p.id,
+          nickname: p.nickname,
+          stage: p.stage,
+        }));
+        const winnerStage = selfPlayer.stage as
+          | 'ALIVE_CLOTHED'
+          | 'ALIVE_PANTS_DOWN';
+        const canSelfRestore = winnerStage === 'ALIVE_PANTS_DOWN';
+        const showTargetPicker = losers.length >= 2;
+        // Action picker is shown when:
+        //   - the winner has a self-restore option (PULL_OWN_PANTS_UP), OR
+        //   - the only loser's stage allows multiple verbs (it never does
+        //     today — PULL_PANTS for clothed, CHOP for pants_down — so the
+        //     picker is informational unless self-restore is unlocked).
+        // We always show the action picker after a target is selected so
+        // the player sees what's about to happen and can swap to
+        // PULL_OWN_PANTS_UP if applicable.
+        const showActionPicker = canSelfRestore || losers.length >= 1;
+
+        if (showTargetPicker || showActionPicker) {
+          setPhase('PICK');
+          const result = await new Promise<{
+            target: string | null;
+            action: ActionKind | null;
+          }>((resolve) => {
+            setPickerState({
+              candidates: losersAsCandidates,
+              chosenTarget: showTargetPicker ? null : losers[0]?.id ?? null,
+              winnerStage,
+              phase: showTargetPicker ? 'target' : 'action',
+              resolve,
+            });
+          });
+          userInputs.target = result.target;
+          userInputs.action = result.action;
+          setPickerState(null);
+        }
+      }
+
+      // Resolve via shared engine — pass the human's picks (or undefined
+      // for engine auto-pick fallback). The engine validates eligibility
+      // and ignores invalid combinations.
+      const inputsTargets: Record<string, string> = {};
+      const inputsActions: Record<string, ActionKind> = {};
+      if (userInputs.target !== null) inputsTargets[SELF_ID] = userInputs.target;
+      if (userInputs.action !== null) inputsActions[SELF_ID] = userInputs.action;
+      const result = resolveRound(playerStates, round, {
+        choices,
+        targets: inputsTargets,
+        actions: inputsActions,
+      });
 
       // Phase progression: RPS (reveal hold) → TIE/ACTION (action sub-segment).
       // FINAL_GOAL §H2 requires the pill to read "RPS" while every alive
@@ -549,6 +652,65 @@ export function GamePage({ onExit }: { onExit?: () => void } = {}): JSX.Element 
       </div>
 
       <BattleLog entries={logEntries} />
+
+      {/* §H3 winner-agency overlay — only mounted while it is the local
+          human's turn to pick a target/action. The picker resolves the
+          submitChoice() promise, which then feeds the choice into
+          resolveRound(). On 5s timeout we resolve with nulls so the
+          engine's auto-pick takes over. */}
+      {pickerState && pickerState.phase === 'target' ? (
+        <TargetPicker
+          candidates={pickerState.candidates}
+          timeoutMs={PICKER_BUDGET_MS}
+          onPick={(id) => {
+            const target = id; // null on timeout
+            // Determine target stage so the action picker can scope
+            // its options. If the human picked one, prefer that;
+            // otherwise default to the first eligible loser.
+            const chosenLoser =
+              target !== null
+                ? pickerState.candidates.find((c) => c.id === target)
+                : pickerState.candidates[0];
+            // Self-restore is the only branch that requires the action
+            // picker; otherwise the action is unique and we can resolve
+            // immediately with the chosen target + null action (engine
+            // picks default).
+            const canSelfRestore =
+              pickerState.winnerStage === 'ALIVE_PANTS_DOWN';
+            if (!canSelfRestore && chosenLoser) {
+              pickerState.resolve({ target, action: null });
+              return;
+            }
+            // Advance to action picker, with the target already locked.
+            setPickerState({
+              ...pickerState,
+              chosenTarget: target,
+              phase: 'action',
+            });
+          }}
+        />
+      ) : null}
+      {pickerState && pickerState.phase === 'action' ? (
+        <ActionPicker
+          winnerStage={pickerState.winnerStage}
+          targetStage={(() => {
+            const c = pickerState.chosenTarget
+              ? pickerState.candidates.find(
+                  (cc) => cc.id === pickerState.chosenTarget,
+                )
+              : pickerState.candidates[0];
+            if (!c || c.stage === 'DEAD') return undefined;
+            return c.stage;
+          })()}
+          timeoutMs={PICKER_BUDGET_MS}
+          onPick={(action) => {
+            pickerState.resolve({
+              target: pickerState.chosenTarget,
+              action,
+            });
+          }}
+        />
+      ) : null}
 
       {/* Bottom action bar — confined to canvas column on desktop, full
           width on mobile. */}

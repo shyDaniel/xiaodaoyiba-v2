@@ -13,7 +13,11 @@
 
 import { createServer } from 'node:http';
 import { Server, type Socket } from 'socket.io';
-import { SHARED_PACKAGE_VERSION, type RpsChoice } from '@xdyb/shared';
+import {
+  SHARED_PACKAGE_VERSION,
+  type ActionKind,
+  type RpsChoice,
+} from '@xdyb/shared';
 import { Room, type RoomBroadcaster } from './rooms/Room.js';
 import { RoomRegistry } from './matchmaking.js';
 
@@ -30,6 +34,10 @@ interface JoinRoomPayload {
 interface ChoicePayload {
   choice: RpsChoice;
 }
+interface WinnerChoicePayload {
+  target: string | null;
+  action: ActionKind | null;
+}
 
 /** Shape of the event the server emits when something the client did is invalid. */
 interface ServerError {
@@ -45,6 +53,14 @@ function isNonEmptyString(x: unknown, max = 32): x is string {
 }
 function isRpsChoice(x: unknown): x is RpsChoice {
   return x === 'ROCK' || x === 'PAPER' || x === 'SCISSORS';
+}
+function isActionKind(x: unknown): x is ActionKind {
+  return (
+    x === 'PULL_PANTS' ||
+    x === 'CHOP' ||
+    x === 'PULL_OWN_PANTS_UP' ||
+    x === 'NONE'
+  );
 }
 
 export interface ServerHandle {
@@ -94,6 +110,9 @@ export function startServer(opts: { port?: number; corsOrigin?: string } = {}): 
       },
       emitError: (socketId, message) => {
         io.to(socketId).emit('room:error', { code: 'ROOM_ERROR', message } satisfies ServerError);
+      },
+      emitWinnerChoice: (socketId, prompt) => {
+        io.to(socketId).emit('room:winnerChoice', prompt);
       },
     };
   }
@@ -193,6 +212,28 @@ export function startServer(opts: { port?: number; corsOrigin?: string } = {}): 
       if (!room) return fail('NO_ROOM', 'room no longer exists');
       const ok = room.submitChoice(socket.id, payload.choice);
       if (!ok) fail('CANNOT_SUBMIT', 'not your turn or game not in progress');
+    });
+
+    socket.on('room:winnerChoice', (raw: unknown) => {
+      const payload = raw as Partial<WinnerChoicePayload>;
+      const target =
+        payload?.target === null
+          ? null
+          : isString(payload?.target)
+            ? payload.target
+            : null;
+      const action =
+        payload?.action === null
+          ? null
+          : isActionKind(payload?.action)
+            ? payload.action
+            : null;
+      const code = registry.socketRoom(socket.id);
+      if (!code) return fail('NOT_IN_ROOM', 'join or create a room first');
+      const room = registry.get(code);
+      if (!room) return fail('NO_ROOM', 'room no longer exists');
+      const ok = room.submitWinnerChoice(socket.id, { target, action });
+      if (!ok) fail('CANNOT_SUBMIT_CHOICE', 'no winner-choice window open for you');
     });
 
     socket.on('room:rematch', () => {

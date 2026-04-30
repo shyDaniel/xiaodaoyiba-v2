@@ -15,6 +15,22 @@
 import { create } from 'zustand';
 import type { Effect, PlayerState } from '@xdyb/shared';
 
+/** §H3 server-emitted winner-choice prompt. The client renders pickers
+ *  while the prompt is set; clearing it (via clearWinnerChoice) signals
+ *  the picker UI has either resolved or timed out locally. */
+export interface WinnerChoicePrompt {
+  round: number;
+  winnerId: string;
+  winnerStage: PlayerState['stage'];
+  candidates: ReadonlyArray<{
+    id: string;
+    nickname: string;
+    stage: PlayerState['stage'];
+  }>;
+  canSelfRestore: boolean;
+  budgetMs: number;
+}
+
 export interface RoomSnapshot {
   roomId: string;
   hostId: string;
@@ -49,6 +65,9 @@ interface GameStoreState {
   snapshot: RoomSnapshot | null;
   /** Pending unconsumed round broadcasts. Game.tsx pops oldest-first. */
   pendingRounds: RoundBroadcast[];
+  /** §H3 active server-issued winner-choice prompt; null when no
+   *  picker should be displayed. */
+  winnerChoice: WinnerChoicePrompt | null;
 
   setConnected(v: boolean): void;
   setError(e: string | null): void;
@@ -58,6 +77,8 @@ interface GameStoreState {
   pushRound(round: RoundBroadcast): void;
   /** Drop the oldest pending round (Game.tsx calls this after EffectPlayer finishes). */
   shiftRound(): void;
+  setWinnerChoice(prompt: WinnerChoicePrompt | null): void;
+  clearWinnerChoice(): void;
 }
 
 export const useGameStore = create<GameStoreState>((set) => ({
@@ -66,18 +87,21 @@ export const useGameStore = create<GameStoreState>((set) => ({
   code: null,
   snapshot: null,
   pendingRounds: [],
+  winnerChoice: null,
 
   setConnected: (v) => set({ connected: v }),
   setError: (e) => set({ error: e }),
-  setRoom: (code, snapshot) => set({ code, snapshot, pendingRounds: [] }),
+  setRoom: (code, snapshot) => set({ code, snapshot, pendingRounds: [], winnerChoice: null }),
   applySnapshot: (snapshot) =>
     set((s) => (s.code ? { snapshot } : { code: snapshot.roomId, snapshot })),
   clearRoom: () =>
-    set({ code: null, snapshot: null, pendingRounds: [], error: null }),
+    set({ code: null, snapshot: null, pendingRounds: [], winnerChoice: null, error: null }),
   pushRound: (round) =>
     set((s) => ({ pendingRounds: [...s.pendingRounds, round] })),
   shiftRound: () =>
     set((s) => ({ pendingRounds: s.pendingRounds.slice(1) })),
+  setWinnerChoice: (prompt) => set({ winnerChoice: prompt }),
+  clearWinnerChoice: () => set({ winnerChoice: null }),
 }));
 
 /** Convenience selector: the snapshot's player whose id matches the given socket id (the local user). */
