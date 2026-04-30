@@ -440,3 +440,150 @@ pnpm dev
 When done, autopilot writes `.autopilot/FINAL_REPORT.md` summarizing
 iterations, refinements, eval overrules, and commits landed. The user
 plays a 60-second session and decides whether to archive v1.
+
+---
+
+## v5: post-ship play-test gaps (2026-04-30 user feedback)
+
+User played the v0 ship and identified four substantive gaps that v5 must
+close. The judge + eval BOTH passed v0; that means the acceptance criteria
+were under-specified (especially A2 — see §H5 root-cause). The ship/no-ship
+gates below are tightened accordingly.
+
+### §H. v5 hard acceptance criteria (additive to A-G)
+
+**§H1. ALL houses fully visible at every supported viewport.**
+- Desktop 1280×800: every player house in 2-, 3-, 4-, 5-, 6-player rooms is
+  fully on-screen. Specifically: the entire house sprite (roof to ground
+  line) and the player's nameplate and any persistent shame indicator
+  (red ankle briefs) is unclipped.
+- Mobile 375×667: same. The bottom row of houses must NOT be clipped
+  by the BattleLog bottom-sheet, the HandPicker bar, or the viewport edge.
+- Verification: eval takes a screenshot at each (viewport × player count)
+  combination — 2 × 5 = 10 screenshots. Any house with bounding box
+  extending past viewport bottom = fail.
+
+**§H2. RPS reveal shows EVERY player's throw simultaneously.**
+- After all alive players have committed their throw and before the action
+  phase fires, a **REVEAL phase** of ≥ 1500ms displays every player's
+  throw choice as a large gesture sprite/emoji on or above their station
+  (✊ ROCK / ✋ PAPER / ✌️ SCISSORS, ≥ 64px).
+- A first-time viewer can scan the screen and intuitively count the
+  distribution ("2 fists, 1 paper, so paper wins"). Currently the reveal
+  collapses into the action phase and only winners are visible — that
+  must change.
+- BattleLog entry on reveal: `R{N}.rps  throws=[✊✋✌️✋]  winners=[paper×2]`
+  (or a colloquial Chinese variant).
+- Verification: screenshot the reveal frame; confirm all N alive
+  players have a throw glyph rendered above/on their card.
+
+**§H3. Winner agency: target picker + action picker.**
+- When the LOCAL player wins (not just bots), they must be presented with:
+  1. **Target picker:** if there are ≥ 2 losers OR the only loser has
+     `stage === 'ALIVE_PANTS_DOWN'` (so a pull would be a no-op),
+     show all losing players as tappable targets. Otherwise auto-pick the
+     single loser. Highlight the selectable region clearly (pulse glow on
+     each loser's house, "选一个目标" prompt).
+  2. **Action picker:** for the chosen target, show 2-3 action buttons:
+     - `扒裤衩 (PULL_PANTS)` — only if target.stage === 'ALIVE_CLOTHED'
+     - `咔嚓 (CHOP)` — only if target.stage === 'ALIVE_PANTS_DOWN'
+     - `穿好裤衩 (PULL_OWN_PANTS_UP)` — **NEW action** — only available
+       when winner.stage === 'ALIVE_PANTS_DOWN' (you've been pantsed
+       previously). This is a SELF action (no target needed). Restores
+       winner to ALIVE_CLOTHED. Comedic / strategic.
+- Picker UI holds for **up to 5s**. If user doesn't choose, default to
+  engine's auto-pick (preserving the current happy path).
+- Pickers are skipped for bot winners (bots use their existing strategy).
+
+**§H4. Engine extension: PULL_OWN_PANTS_UP action.**
+- New `ActionKind`: `'PULL_OWN_PANTS_UP'`.
+- New default-action rule: if winner.stage === 'ALIVE_PANTS_DOWN', the
+  default is still PULL_PANTS / CHOP on a target — but PULL_OWN_PANTS_UP
+  is a *selectable alternative* the winner may pick. Engine handles it as
+  a self-action (actor === target, no target eligibility check, no stage
+  flip on target).
+- Side effects:
+  - `winner.stage = 'ALIVE_CLOTHED'` (restored)
+  - Effect emitted: `{ kind: 'PULL_OWN_PANTS_UP', actor: winnerId,
+    atMs: PHASE_OFFSETS.PULL_PANTS }`
+  - Narration variant: "你蹲下身, 把裤衩捡回来穿好了" (5+ variants in
+    `packages/shared/src/narrative/lines.ts`)
+- Tests: `engine.test.ts` covers the new action — winner.stage flips back
+  to ALIVE_CLOTHED, ankle-briefs sprite removed, no losers affected.
+
+**§H5. Headless sim must exercise the agency code path. (META-FIX)**
+- `sim.ts` accepts a new `--winner-strategy <name>` flag with at least
+  these strategies:
+  - `auto` (current default — engine picks)
+  - `random-target+random-action` — sim simulates a human picking
+    randomly among eligible targets and actions
+  - `prefer-self-restore` — winner with PANTS_DOWN always picks
+    PULL_OWN_PANTS_UP if available
+- Each round of sim output now includes: `winner_picked_target` and
+  `winner_picked_action` columns (or `auto` if engine fell back).
+- Acceptance: a sim run with `--winner-strategy random-target+random-action`
+  over 50 rounds with a 4-player room must show:
+  - `PULL_OWN_PANTS_UP` action occurs at least once (verifies engine
+    plumbing reaches it)
+  - Multiple distinct winners pick different targets (verifies target
+    plumbing works)
+  - Distribution of `winner_picked_action` is non-degenerate
+- This is the gate that would have caught v0's missing winner-choice UI:
+  if the sim says "agency works", the client UI must surface it.
+
+**§H6. Cuter character art.**
+- The current Character.ts produces a 4-color chibi rig that reads
+  flat/stick-figure. v5 raises the bar:
+  - Bigger, rounder head (proportions ≈ 2:1 head-to-body, classic chibi)
+  - Visible eyes with highlights (≥ 2 colors per eye for shading)
+  - Visible mouth (smile / surprise / grimace per state — at least 3
+    expressions: happy / shocked / dead)
+  - Cloth folds / shading on the shirt and pants (≥ 2 tones per garment)
+  - Hair tuft or hat (≥ 2 distinct hair styles in the procedural
+    generator so different players look different)
+  - Subtle squash-and-stretch on idle bob (every 1.5-2.5s)
+- Reference cuteness bar: Animal Crossing villagers, Cookie Clicker
+  cookies, Stardew Valley villagers, Hades petting-the-dog frame.
+- Eval verification: take a 256×256 viewport-zoom screenshot of one
+  character's head; compare mentally to a screenshot of a Stardew
+  villager. If ours reads "stick figure" / "MS Paint", fail.
+
+**§H7. BattleLog must include winner's choice.**
+- New BattleLog row format on action phase:
+  `R{N}.action  小明 vs 你  扒裤衩 ✓` or `小红 picks 自己 → 穿好裤衩 ✓`.
+- Color-coded badge for new action: 穿 (cyan / blue, distinct from 扒
+  yellow and 砍 red).
+
+### §I. v5 verification commands
+
+```bash
+# Headless gate (now models agency)
+pnpm sim --players 4 --bots counter,random,iron,mirror \
+         --winner-strategy random-target+random-action \
+         --rounds 50 --seed 42
+# → distribution shows PULL_OWN_PANTS_UP ≥ 1 occurrence,
+#   target choices vary across winners, no infinite loops
+
+# Engine tests (new PULL_OWN_PANTS_UP coverage)
+pnpm test
+# → engine.test.ts has a "winner with pants down chooses PULL_OWN_PANTS_UP"
+#   case asserting stage flip back to ALIVE_CLOTHED
+
+# UI gate (eval drives the new pickers)
+pnpm dev
+# → eval starts a 4p room as a human, wins a round, takes a screenshot
+#   showing the target picker highlighted, picks a target, screenshots
+#   the action picker showing 2-3 buttons, picks an action, confirms
+#   the action plays out. Repeats for the PULL_OWN_PANTS_UP path
+#   (set up by losing R1 then winning R2).
+# → eval also screenshots all 5 player counts × 2 viewports = 10 frames,
+#   confirms no house clipping.
+```
+
+### §J. v5 done = judge ✓ + eval ✓ + headless distribution ✓
+
+The ship gate adds an explicit headless-distribution check: the sim's
+`winner_picked_action` distribution must include `PULL_OWN_PANTS_UP` at
+least once in a 50-round run, AND the target picker must be exercised
+by at least one winner that had ≥ 2 eligible targets. If either is
+missing, eval blocks regardless of judge.
