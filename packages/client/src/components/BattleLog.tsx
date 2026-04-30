@@ -87,6 +87,39 @@ export interface LogEntry {
   actors?: string[];
   /** Timestamp for fade-in animation. */
   ts: number;
+  /**
+   * Stable composite key — `${round}.${phase}.${actorId|''}.${targetId|''}.${verb}`.
+   * Used to deduplicate appends when StrictMode double-invokes the
+   * drain effect or when a server replays an effect. Rendered on the
+   * row as `data-row-key` so acceptance probes can assert
+   * `aside.querySelectorAll('[data-row-key]').length ===
+   * new Set(...keys).size`. Optional only for legacy rows; new
+   * rows MUST set it.
+   */
+  rowKey?: string;
+}
+
+/**
+ * Build the §H7 dedup key from the canonical (round, phase, actor,
+ * target, verb) tuple. Rows with identical keys are treated as the
+ * same logical event and the second append is a no-op. Verb is
+ * folded in so a tie-narration row and a 死 row in the same round
+ * never collapse into each other.
+ */
+export function buildRowKey(args: {
+  round: number;
+  phase: string;
+  verb: LogVerb;
+  actorId?: string | undefined;
+  targetId?: string | undefined;
+}): string {
+  return [
+    args.round,
+    args.phase,
+    args.verb,
+    args.actorId ?? '',
+    args.targetId ?? '',
+  ].join('|');
 }
 
 const VERB_COLOR: Record<LogVerb, number> = {
@@ -486,6 +519,7 @@ function LogRow({ entry }: { entry: LogEntry }): JSX.Element {
 
   return (
     <div
+      data-row-key={entry.rowKey ?? entry.id}
       style={{
         background: fresh
           ? 'rgba(247,215,116,0.18)'

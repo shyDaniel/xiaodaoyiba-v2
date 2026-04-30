@@ -26,6 +26,7 @@ import { TargetPicker, type TargetCandidate } from '../components/TargetPicker.j
 import { ActionPicker } from '../components/ActionPicker.js';
 import {
   BattleLog,
+  buildRowKey,
   formatActionRow,
   type LogEntry,
   type LogVerb,
@@ -337,6 +338,8 @@ export function GamePage({ onExit }: { onExit?: () => void } = {}): JSX.Element 
             verb: '掷',
             text: `throws=[${throwsText}] winners=[${winnersText}]`,
             actors: actorIds,
+            // S-426: rps reveal is one row per round, no actor/target.
+            rowKey: buildRowKey({ round, phase: 'rps', verb: '掷' }),
           },
           setLogEntries,
         );
@@ -402,6 +405,18 @@ export function GamePage({ onExit }: { onExit?: () => void } = {}): JSX.Element 
             verb: entry.verb as LogVerb,
             text,
             actors,
+            // S-426: stable dedup key folds in actor+target so two
+            // PULL_PANTS narrations targeting different victims in
+            // the same round both render, but the same narration
+            // delivered twice (Pixi tween double-tick / replay) is
+            // a no-op.
+            rowKey: buildRowKey({
+              round,
+              phase: phaseTag,
+              verb: entry.verb as LogVerb,
+              actorId: entry.actor,
+              targetId: entry.target,
+            }),
           },
           setLogEntries,
         );
@@ -458,6 +473,12 @@ export function GamePage({ onExit }: { onExit?: () => void } = {}): JSX.Element 
           verb: '胜',
           text: winner ? `${winner.nickname}赢得了胜利！` : '游戏结束',
           actors: winner ? [`${winner.nickname}|${winner.id}`] : [],
+          rowKey: buildRowKey({
+            round,
+            phase: 'over',
+            verb: '胜',
+            actorId: result.winnerId ?? undefined,
+          }),
         }, setLogEntries);
         setPhase('OVER');
       } else {
@@ -812,14 +833,35 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+/**
+ * S-426: dedup-on-append (mirrors MultiGame). Stable rowKey from
+ * (round, phase, actor, target, verb) collapses redundant narration
+ * callbacks into the single row the user expects. Solo path is less
+ * exposed to the bug than multi (no socket replay) but the symmetry
+ * means the §H7 `data-row-key` acceptance probe behaves identically
+ * across both surfaces.
+ */
 function appendLog(
   entry: Omit<LogEntry, 'id' | 'ts'>,
   setLogEntries: React.Dispatch<React.SetStateAction<LogEntry[]>>,
 ): void {
-  setLogEntries((prev) => [
-    ...prev.slice(-40),
-    { ...entry, id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ts: Date.now() },
-  ]);
+  setLogEntries((prev) => {
+    if (entry.rowKey) {
+      for (let i = prev.length - 1; i >= 0; i--) {
+        if (prev[i]?.rowKey === entry.rowKey) {
+          return prev;
+        }
+      }
+    }
+    return [
+      ...prev.slice(-40),
+      {
+        ...entry,
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        ts: Date.now(),
+      },
+    ];
+  });
 }
 
 function choicesToActors(

@@ -11,7 +11,7 @@
 // judge runs against the live app.
 
 import { describe, expect, it } from 'vitest';
-import { formatActionRow, formatActionVerb } from './BattleLog.js';
+import { buildRowKey, formatActionRow, formatActionVerb } from './BattleLog.js';
 
 describe('formatActionVerb', () => {
   it('扒 → 扒裤衩 (yellow PULL_PANTS keyword)', () => {
@@ -69,6 +69,71 @@ describe('formatActionRow', () => {
     });
     expect(row).toMatch(/R5\.action.+咔嚓.+✓/);
     expect(row).toContain('→ 小刚');
+  });
+
+  // S-426: dedup keys must collapse repeated narrations of the SAME
+  // logical event (StrictMode double drain, server replay) but keep
+  // genuinely distinct events apart.
+  it('S-426: identical (round, phase, verb, actor, target) → equal rowKey', () => {
+    const a = buildRowKey({
+      round: 1,
+      phase: 'action',
+      verb: '扒',
+      actorId: 'iron',
+      targetId: '玩家84',
+    });
+    const b = buildRowKey({
+      round: 1,
+      phase: 'action',
+      verb: '扒',
+      actorId: 'iron',
+      targetId: '玩家84',
+    });
+    expect(a).toBe(b);
+  });
+
+  it('S-426: same round but different actor → distinct rowKey', () => {
+    const a = buildRowKey({
+      round: 1,
+      phase: 'action',
+      verb: '扒',
+      actorId: 'iron',
+      targetId: '玩家84',
+    });
+    const b = buildRowKey({
+      round: 1,
+      phase: 'action',
+      verb: '扒',
+      actorId: 'counter#2',
+      targetId: 'counter',
+    });
+    expect(a).not.toBe(b);
+  });
+
+  it('S-426: same actor/target but different verb (扒 vs 砍 in same round) → distinct rowKey', () => {
+    const a = buildRowKey({
+      round: 3,
+      phase: 'action',
+      verb: '扒',
+      actorId: 'me',
+      targetId: 'bot-a',
+    });
+    const b = buildRowKey({
+      round: 3,
+      phase: 'action',
+      verb: '砍',
+      actorId: 'me',
+      targetId: 'bot-a',
+    });
+    expect(a).not.toBe(b);
+  });
+
+  it('S-426: rps reveal row gets a single rowKey per round (no actor/target)', () => {
+    const r1 = buildRowKey({ round: 1, phase: 'rps', verb: '掷' });
+    const r2 = buildRowKey({ round: 2, phase: 'rps', verb: '掷' });
+    expect(r1).not.toBe(r2);
+    // Repeated calls for the same round produce the same key.
+    expect(buildRowKey({ round: 1, phase: 'rps', verb: '掷' })).toBe(r1);
   });
 
   it('row body is single-line so /.+/ regex traverses headline + colloquial', () => {

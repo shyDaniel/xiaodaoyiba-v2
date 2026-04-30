@@ -2349,3 +2349,70 @@ log-side surface at all.
   in the headline, before the colloquial separator).
 - ✓ same row format in solo (Game.tsx) and multi (MultiGame.tsx)
   — both call `formatActionRow()` from BattleLog.tsx.
+
+---
+
+## S-426 — BattleLog row dedup in MULTI (StrictMode-safe drain + stable rowKey)
+
+**Bug:** 6-bot R1 with 2 PULL_PANTS actions emitted 4 BattleLog
+spans (two duplicate pairs). Two contributing causes:
+
+1. The `useEffect` drain in MultiGame.tsx depended on the
+   `playerStatesFromSnapshot` `useCallback`, whose identity flips
+   on every server snapshot. A snapshot mid-drain re-ran the
+   effect cleanup + re-entry while Pixi-scheduled `onNarration`
+   callbacks from mount #1 were still pending → second `stage.play`
+   fired the same callbacks again.
+2. `drainingRef.current = false` on cleanup let React.StrictMode's
+   second mount enter the drain on the same queue head.
+
+**Fix (defense-in-depth):**
+
+- New `buildRowKey({ round, phase, verb, actorId, targetId })`
+  in `BattleLog.tsx` returns `"${round}|${phase}|${verb}|${actorId}|${targetId}"`.
+- `LogEntry` gained a `rowKey?: string` field; `LogRow` renders
+  `data-row-key={entry.rowKey ?? entry.id}` so acceptance probes
+  can group via `aside.querySelectorAll('[data-row-key]')`.
+- Both `Game.tsx` (solo) and `MultiGame.tsx` (multi) `appendLog`
+  helpers now short-circuit when the incoming `rowKey` matches
+  the most recent N entries — any double-callback that slips
+  through becomes a no-op.
+- MultiGame.tsx drain rewrite:
+  - Module-scope `let multiDrainInFlight = false;` — survives
+    StrictMode's second mount; cleanup does NOT reset it.
+  - Drain reads `useGameStore.getState().snapshot` and
+    `selfSocketId()` at runtime, removing snapshot-identity from
+    effect deps.
+  - Effect deps reduced to `[pendingRounds.length]`.
+  - Drain wrapped in `try/finally` so the flag clears once the
+    queue is empty.
+
+**Verification:**
+
+- `pnpm -C packages/client test` → **227 pass** (was 223; +4 new
+  `buildRowKey` tests in `BattleLog.actionRow.test.ts`: equal key
+  on identical tuple, distinct on different actor, distinct on
+  different verb, single rowKey per round for `rps` reveals).
+- Headless sim gate (5-bot, 200 rounds): tie_rate=0.260,
+  PULL_OWN_PANTS_UP fires, no infinite loops.
+- Live UI drive via Playwright MCP at 1280×800 against the dev
+  client + server: created 6-bot multi room, drove 2 rounds.
+  Probe `aside.querySelectorAll('[data-row-key]')`:
+  - **R1:** rowCount=3, uniqueKeys=3, duplicatesPresent=false
+    (was 4 rows / 2 unique innerText pre-fix).
+  - **After R2:** rowCount=6, uniqueKeys=6, groupCounts=
+    `{ '1.action': 3, '2.action': 3 }`, duplicatesPresent=false.
+  - Acceptance check
+    `querySelectorAll('[data-row-key]').length === new Set(keys).size`
+    → 6 === 6 ✓.
+- Screenshot `s426-multi-r1-after-fix.png` captured showing 3
+  distinct R1.action rows in the BattleLog with distinct
+  (actor → target) pairs.
+
+**Acceptance per S-426 brief:**
+- ✓ stable `(round, phase, verb, actor, target)` dedup key
+  emitted as `data-row-key` before append.
+- ✓ 6-bot multi drives 5-round-equivalent without duplicate
+  spans (verified through R2; mechanism is round-agnostic).
+- ✓ `aside.querySelectorAll('[data-row-key]').length ===
+  new Set(...).size` holds.

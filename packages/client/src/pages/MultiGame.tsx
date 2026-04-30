@@ -29,6 +29,7 @@ import { TargetPicker, type TargetCandidate } from '../components/TargetPicker.j
 import { ActionPicker } from '../components/ActionPicker.js';
 import {
   BattleLog,
+  buildRowKey,
   formatActionRow,
   type LogEntry,
   type LogVerb,
@@ -54,6 +55,17 @@ import {
 import { useGameStore } from '../store/gameStore.js';
 
 type PhaseLabel = 'IDLE' | 'WAIT' | 'ACTION' | 'TIE' | 'OVER';
+
+/**
+ * S-426: module-scope drain guard. Survives React.StrictMode's double
+ * effect mount (the per-instance useRef-based guard cleared itself on
+ * cleanup, so the second mount started a parallel drain that
+ * appended every narration twice). Tied to module identity, not to a
+ * component instance — this is the canonical fix for the "two effects
+ * racing the same Zustand queue" pattern. Cleared on full unmount via
+ * the cleanup; the second StrictMode mount sees `true` and bails.
+ */
+let multiDrainInFlight = false;
 
 const PHASE_INFOS: Record<PhaseLabel, { label: string; hint: string }> = {
   IDLE: { label: '出拳', hint: '点击下方按钮选择石头/剪刀/布' },
@@ -135,18 +147,11 @@ export function MultiGamePage(): JSX.Element {
     setPickedTarget(null);
   }, [winnerChoice?.round, winnerChoice?.winnerId]);
 
-  // Build PlayerState[] from snapshot for EffectPlayer.play(). We need this
-  // shape (not the snapshot's player rows) because EffectPlayer reads
-  // .stage/.nickname for narration.
-  const playerStatesFromSnapshot = useCallback((): PlayerState[] => {
-    if (!snapshot) return [];
-    return snapshot.players.map((p) => ({
-      id: p.id,
-      nickname: p.nickname,
-      stage: p.stage,
-      isBot: p.isBot,
-    }));
-  }, [snapshot]);
+  // (Build of PlayerState[] used to live here as a useCallback. S-426
+  // moved that lookup inside the drain effect — reading from
+  // `useGameStore.getState()` at drain time — because the callback's
+  // identity flipped on every server snapshot, retriggering the drain
+  // mid-flight and producing duplicate BattleLog rows.)
 
   const stagePlayers: StagePlayer[] = useMemo(
     () =>
@@ -161,132 +166,178 @@ export function MultiGamePage(): JSX.Element {
 
   // Drain pending rounds: as new RoundBroadcasts arrive in the store, play
   // them on the canvas in order, awaiting each before consuming the next.
-  // useRef lock avoids re-entrancy if the store updates mid-play.
-  const drainingRef = useRef(false);
+  // S-426: module-scope `multiDrainInFlight` guard makes this StrictMode-
+  // safe — the per-instance useRef approach reset itself on cleanup, so
+  // the second mount started a parallel drain that double-appended every
+  // narration. With the module-scope flag, the second mount sees `true`
+  // and bails immediately; only one drain ever owns the queue.
   useEffect(() => {
-    if (drainingRef.current) return;
+    if (multiDrainInFlight) return;
     if (pendingRounds.length === 0) return;
     let cancelled = false;
-    drainingRef.current = true;
+    multiDrainInFlight = true;
 
     const drain = async (): Promise<void> => {
-      while (!cancelled) {
-        const head = useGameStore.getState().pendingRounds[0];
-        if (!head) break;
+      try {
+        while (!cancelled) {
+          const head = useGameStore.getState().pendingRounds[0];
+          if (!head) break;
 
-        setAnimatingRound(head.round);
-        const players = playerStatesFromSnapshot();
+          setAnimatingRound(head.round);
+          // Read freshest player roster from the store at drain time —
+          // we no longer depend on `playerStatesFromSnapshot` in the
+          // effect deps (its identity flips on every server snapshot
+          // and used to retrigger the effect mid-drain → 2× rows).
+          const snapNow = useGameStore.getState().snapshot;
+          const localId = selfSocketId();
+          const players: PlayerState[] = snapNow
+            ? snapNow.players.map((p) => ({
+                id: p.id,
+                nickname: p.nickname,
+                stage: p.stage,
+                isBot: p.isBot,
+              }))
+            : [];
 
-        const isTie = head.effects.some((e) => e.type === 'TIE_NARRATION');
+          const isTie = head.effects.some((e) => e.type === 'TIE_NARRATION');
 
-        const onNarration = (entry: {
-          atMs: number;
-          text: string;
-          verb: '扒' | '砍' | '闪' | '平' | '死' | '穿';
-          actor?: string;
-          target?: string;
-        }): void => {
-          const actorP = entry.actor
-            ? players.find((p) => p.id === entry.actor)
-            : undefined;
-          const targetP = entry.target
-            ? players.find((p) => p.id === entry.target)
-            : undefined;
-          const actors = isTie
-            ? players.map((p) => `${p.nickname}|${p.id}`)
-            : [actorP, targetP]
-                .filter((p): p is PlayerState => Boolean(p))
-                .map((p) => `${p.nickname}|${p.id}`);
-          // FINAL_GOAL §H7: structured action row. Tie phases keep
-          // their colloquial line as-is; action phases (扒/砍/穿)
-          // emit `R{N}.action  X → Y 扒裤衩|咔嚓|穿好裤衩 ✓ ·
-          // {colloquial}` so /R\d+\.action.+(扒裤衩|咔嚓|穿好裤衩).+✓/
-          // matches against innerText. Same shape as solo Game.tsx.
-          const phaseTag = isTie ? 'tie' : 'action';
-          const text = isTie
-            ? entry.text
-            : formatActionRow({
-                round: head.round,
-                verb: entry.verb,
-                actorNickname: actorP?.nickname ?? entry.actor ?? '？',
-                targetNickname: targetP?.nickname ?? entry.target ?? '？',
-                actorId: entry.actor,
-                targetId: entry.target,
-                colloquial: entry.text,
-              });
-          appendLog(
-            {
+          const onNarration = (entry: {
+            atMs: number;
+            text: string;
+            verb: '扒' | '砍' | '闪' | '平' | '死' | '穿';
+            actor?: string;
+            target?: string;
+          }): void => {
+            const actorP = entry.actor
+              ? players.find((p) => p.id === entry.actor)
+              : undefined;
+            const targetP = entry.target
+              ? players.find((p) => p.id === entry.target)
+              : undefined;
+            const actors = isTie
+              ? players.map((p) => `${p.nickname}|${p.id}`)
+              : [actorP, targetP]
+                  .filter((p): p is PlayerState => Boolean(p))
+                  .map((p) => `${p.nickname}|${p.id}`);
+            // FINAL_GOAL §H7: structured action row. Tie phases keep
+            // their colloquial line as-is; action phases (扒/砍/穿)
+            // emit `R{N}.action  X → Y 扒裤衩|咔嚓|穿好裤衩 ✓ ·
+            // {colloquial}` so /R\d+\.action.+(扒裤衩|咔嚓|穿好裤衩).+✓/
+            // matches against innerText. Same shape as solo Game.tsx.
+            const phaseTag = isTie ? 'tie' : 'action';
+            const text = isTie
+              ? entry.text
+              : formatActionRow({
+                  round: head.round,
+                  verb: entry.verb,
+                  actorNickname: actorP?.nickname ?? entry.actor ?? '？',
+                  targetNickname: targetP?.nickname ?? entry.target ?? '？',
+                  actorId: entry.actor,
+                  targetId: entry.target,
+                  colloquial: entry.text,
+                });
+            // S-426: stable rowKey from (round, phase, actor, target,
+            // verb). appendLog rejects duplicates so any redundant
+            // narration callback (network replay, double Pixi tween
+            // tick, double drain) is a no-op rather than a 2nd row.
+            const rowKey = buildRowKey({
               round: head.round,
               phase: phaseTag,
               verb: entry.verb as LogVerb,
-              text,
-              actors,
-            },
-            setLogEntries,
-          );
-        };
+              actorId: entry.actor,
+              targetId: entry.target,
+            });
+            appendLog(
+              {
+                round: head.round,
+                phase: phaseTag,
+                verb: entry.verb as LogVerb,
+                text,
+                actors,
+                rowKey,
+              },
+              setLogEntries,
+            );
+          };
 
-        const stage = stageRef.current;
-        if (stage) {
-          await stage.play(head.effects, players, { onNarration });
-        } else {
-          // Pixi not ready yet — emit narration synchronously so the panel
-          // still gets the rows, then sit for the canonical duration.
-          for (const eff of head.effects) {
-            if (eff.type === 'TIE_NARRATION') {
-              onNarration({ atMs: 0, text: eff.text, verb: '平' });
-            } else if (eff.type === 'NARRATION') {
-              onNarration({
-                atMs: eff.atMs,
-                text: eff.text,
-                verb: eff.verb,
-                ...(eff.actor !== undefined ? { actor: eff.actor } : {}),
-                ...(eff.target !== undefined ? { target: eff.target } : {}),
-              });
-            }
-          }
-          await new Promise((r) => window.setTimeout(r, isTie ? 2000 : 4000));
-        }
-
-        if (cancelled) break;
-
-        // Reset characters to home after action; on game over also
-        // append the victory row + jingle.
-        const updatedSnap = useGameStore.getState().snapshot;
-        const playerIds = updatedSnap?.players.map((p) => p.id) ?? [];
-        stageRef.current?.reset(playerIds);
-
-        if (head.isGameOver) {
-          const winner = updatedSnap?.players.find((p) => p.id === head.winnerId);
-          if (head.winnerId === meId) {
-            playSfx('victory');
+          const stage = stageRef.current;
+          if (stage) {
+            await stage.play(head.effects, players, { onNarration });
           } else {
-            playSfx('defeat');
+            // Pixi not ready yet — emit narration synchronously so the panel
+            // still gets the rows, then sit for the canonical duration.
+            for (const eff of head.effects) {
+              if (eff.type === 'TIE_NARRATION') {
+                onNarration({ atMs: 0, text: eff.text, verb: '平' });
+              } else if (eff.type === 'NARRATION') {
+                onNarration({
+                  atMs: eff.atMs,
+                  text: eff.text,
+                  verb: eff.verb,
+                  ...(eff.actor !== undefined ? { actor: eff.actor } : {}),
+                  ...(eff.target !== undefined ? { target: eff.target } : {}),
+                });
+              }
+            }
+            await new Promise((r) => window.setTimeout(r, isTie ? 2000 : 4000));
           }
-          appendLog(
-            {
-              round: head.round,
-              phase: 'over',
-              verb: '胜',
-              text: winner ? `${winner.nickname}赢得了胜利！` : '游戏结束',
-              actors: winner ? [`${winner.nickname}|${winner.id}`] : [],
-            },
-            setLogEntries,
-          );
-        }
 
-        useGameStore.getState().shiftRound();
-        setAnimatingRound(null);
+          if (cancelled) break;
+
+          // Reset characters to home after action; on game over also
+          // append the victory row + jingle.
+          const updatedSnap = useGameStore.getState().snapshot;
+          const playerIds = updatedSnap?.players.map((p) => p.id) ?? [];
+          stageRef.current?.reset(playerIds);
+
+          if (head.isGameOver) {
+            const winner = updatedSnap?.players.find((p) => p.id === head.winnerId);
+            if (head.winnerId === localId) {
+              playSfx('victory');
+            } else {
+              playSfx('defeat');
+            }
+            appendLog(
+              {
+                round: head.round,
+                phase: 'over',
+                verb: '胜',
+                text: winner ? `${winner.nickname}赢得了胜利！` : '游戏结束',
+                actors: winner ? [`${winner.nickname}|${winner.id}`] : [],
+                rowKey: buildRowKey({
+                  round: head.round,
+                  phase: 'over',
+                  verb: '胜',
+                  actorId: head.winnerId ?? undefined,
+                }),
+              },
+              setLogEntries,
+            );
+          }
+
+          useGameStore.getState().shiftRound();
+          setAnimatingRound(null);
+        }
+      } finally {
+        multiDrainInFlight = false;
       }
-      drainingRef.current = false;
     };
 
     void drain();
     return () => {
       cancelled = true;
-      drainingRef.current = false;
+      // NB: do NOT clear multiDrainInFlight here — the running drain's
+      // own `finally` clears it after the awaited stage.play() resolves.
+      // Clearing on cleanup is what produced the iter-7 race; leaving
+      // it true makes the StrictMode second mount short-circuit cleanly.
     };
-  }, [pendingRounds.length, meId, playerStatesFromSnapshot]);
+    // S-426: deps include ONLY the new-round signal. The drain reads
+    // `useGameStore.getState()` for fresh data, so depending on
+    // `playerStatesFromSnapshot` (whose identity flips on every
+    // server snapshot) caused a teardown+restart mid-drain that
+    // re-played stage.play() on the same head — producing the 2×
+    // duplicate-row symptom from the brief.
+  }, [pendingRounds.length]);
 
   const onPick = useCallback(
     (choice: RpsChoice) => {
@@ -762,14 +813,38 @@ export function MultiGamePage(): JSX.Element {
 
 // ---- helpers ----
 
+/**
+ * S-426: dedup-on-append. If the new entry carries a `rowKey` already
+ * present in the most recent N rows, the append is a no-op — this
+ * collapses any redundant narration callback (StrictMode-driven
+ * effect remount, in-flight drain that overlapped with a teardown,
+ * server replay) into the single row the user expects. The window of
+ * "most recent N rows" is the trailing 40 we already cap at, so we
+ * never grow unboundedly even if the same key recurs many rounds
+ * apart (impossible in practice — `round` is part of the key).
+ */
 function appendLog(
   entry: Omit<LogEntry, 'id' | 'ts'>,
   setLogEntries: React.Dispatch<React.SetStateAction<LogEntry[]>>,
 ): void {
-  setLogEntries((prev) => [
-    ...prev.slice(-40),
-    { ...entry, id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ts: Date.now() },
-  ]);
+  setLogEntries((prev) => {
+    if (entry.rowKey) {
+      // Linear scan over the trailing 40 rows we keep — O(40) is fine.
+      for (let i = prev.length - 1; i >= 0; i--) {
+        if (prev[i]?.rowKey === entry.rowKey) {
+          return prev;
+        }
+      }
+    }
+    return [
+      ...prev.slice(-40),
+      {
+        ...entry,
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        ts: Date.now(),
+      },
+    ];
+  });
 }
 
 function primaryFooterButtonStyle(): React.CSSProperties {
