@@ -1657,3 +1657,111 @@ and non-winning humans see no overlay.
 - `pnpm -r test` → 142/142 (shared 79; server 21; client +7 new
   picker cases for 42 total).
 - `pnpm -r build` exits 0; client bundle 539KB (no regression).
+
+---
+
+## Iteration 43 — §H1 playable-rect layout: 2..6 players × {1280×800, 375×667} (S-380)
+
+**Problem:** At 375×667 (iPhone SE / typical mobile portrait) with the
+4-player solo room, only the front-row characters (小刚, 小芳) rendered
+fully — the back-row characters (你, 小明) had their feet/briefs clipped
+behind the houses, and the four name-plaques crowded into the top 80 px
+because `computeSpots()` divided the **entire** canvas height (incl. the
+fixed-position React BattleLog bottom-sheet at `bottom: 132 px` and the
+HandPicker bar that occupies another ~150 px). The judge screenshot
+`judge-iter42-mobile-4p.png` reproduced the symptom 1:1.
+
+The same math also produced an off-canvas-left house at the leftmost
+fan-layout slot for 5/6 players × 375 px width (radiusX exceeded
+`w/2 - half_house_width`).
+
+**Approach (FINAL_GOAL §H1):**
+Introduce an explicit *playable rect* — `(top, bottom)` in canvas
+coordinates — that subtracts the React chrome reserves on each viewport.
+All station math (front-row Y, back-row Y, fan-radius, scale) now derives
+from this rect, not from raw canvas height. Houses become *resizable* so
+narrow viewports can run smaller native dimensions instead of always
+drawing at the desktop 220×180. Ground horizon repositions to align with
+the rect so the painted dirt road meets the front-row stoops.
+
+**Reserves (mobile <768 px wide vs desktop):**
+- top reserve: 92 px mobile (header) | 64 px desktop
+- bottom reserve: 184 px mobile (BattleLog 132 + HandPicker 52) | 92 px
+  desktop (HandPicker only — BattleLog is a right drawer there)
+
+At 375×667 → playableH = 667 − 92 − 184 = 391 px.
+At 1280×800 → playableH = 800 − 64 − 92 = 644 px.
+
+`maxScale = min(1.0, (playableH − 16) / (charNativeH × 1.5 + 240))` so
+the front-row character's full extent (head 128 + briefs 4 anchored at
+charY) plus the back-row house above it always fits between top and
+bottom of the rect. At 375×667 this clamps to ≈ 0.85.
+
+**Files:**
+- `packages/client/src/canvas/GameStage.tsx`
+  - Exports new `Spot` interface adding `houseW`, `houseH` per-player
+    so individual stations can scale down on narrow viewports.
+  - Exports new `computePlayableRect(w, h) → {top, bottom}`.
+  - Refactors `layoutPlayers()` to call `computePlayableRect`, derive
+    `spots` via the new `computeSpots(n, w, top, bottom)`, then call
+    `house.resize(spot.houseW, spot.houseH)` and
+    `refs.ground.setBands(horizon, groundY)` per frame.
+  - Rewrites `computeSpots()` to take the playable rect bounds, with
+    `fitHouseH()`/`fitHouseW()` helpers and a clamped fan radiusX:
+    `radiusX = min(w*0.42, radiusY*0.95, w/2 - xMargin)` where
+    `xMargin = 6 + halfHouseAtBackScale`. Fixes the leftmost-house
+    off-canvas symptom for 5/6 players × 375 px.
+- `packages/client/src/canvas/stage/House.ts` — caches the construction
+  `opts` and adds `resize(width, height)` that re-runs `draw()` +
+  `redrawDamage()` only when dimensions change (no-op fast-path so
+  per-frame layout doesn't repaint unnecessarily).
+- `packages/client/src/canvas/stage/Ground.ts` — adds
+  `horizonOverride`/`groundYOverride` fields and `setBands()` so the
+  painted ground sits inside the playable rect instead of always at
+  `h * 0.62 / 0.82` defaults.
+- `packages/client/src/canvas/layout.test.ts` (NEW, +127 lines, +22
+  tests) — for every `(player_count ∈ {2,3,4,5,6}) × (viewport ∈
+  {1280×800, 375×667})` combination asserts that:
+  - the playable rect is non-empty (`bottom − top > 150`);
+  - every spot's House visual bounding box (body + roof + plaque,
+    accounting for the per-spot scale) lies entirely within
+    `[playable.top − 1, playable.bottom + 1]`;
+  - every spot's Character visual bounding box (feet anchor at
+    `charY`, head top at `charY − 128 × 1.05 × scale`) lies entirely
+    within the same band;
+  - no station's house slides off the canvas left/right edges
+    (the bug 5/6p × 375 px reproduced before the radiusX clamp);
+  - each station's `scale > 0.45` and house `≥ 80×90 px` so nothing
+    degenerates into a sub-readable speck.
+
+**Verification (acceptance gates):**
+- `pnpm -r test` → **164/164** pass (shared 79; server 21; client 64,
+  including the +22 new layout cases). Layout file: `1.80 s` total.
+- `pnpm -C packages/client build` exits 0. Bundle size 540.68 kB
+  (gzip 172.98 kB) — +1 kB vs S-374 (the new resize/setBands paths).
+- Visual sanity: solo 4p × 1280×800 (`judge-iter43-desktop-4p.png`)
+  shows all four houses + characters + name-plaques unclipped, with
+  briefs visible above the HandPicker. Solo 4p × 375×667
+  (`judge-iter43-mobile-4p.png`) shows back-row 你/小明 with full head +
+  body + briefs visible above the BattleLog drawer — the original
+  judge symptom is fixed. Player-counts 2/3/5/6 are not directly
+  reachable in solo mode (Solo is hard-wired at 4); MultiGame requires
+  a live socket. Per the user's "y_max < canvas_visible_height_minus_
+  bottom_chrome" criterion, the unit-test matrix programmatically
+  asserts this for all 10 combos against the same `computeSpots()`
+  function the runtime calls.
+- `pnpm sim --players 4 --bots counter,random,iron,mirror
+   --winner-strategy random-target+random-action --rounds 50 --seed 42`
+  unchanged: tie_rate ≈ 0.260, PULL_OWN_PANTS_UP fires, distribution
+  non-degenerate (no engine path was touched).
+
+**Notes on contract preservation:**
+- `Spot` is now an exported interface (was anonymous `ReturnType<typeof
+  computeSpots>[number]` consumers). The shape is a strict superset of
+  the previous one (added `houseW`, `houseH`); existing reads of
+  `houseX`/`houseY`/`charX`/`charY`/`scale`/`back` still work.
+- `House` constructor signature is unchanged. The new `resize()` is a
+  pure addition.
+- `Ground.setBands()` is a pure addition; without a call the class
+  falls back to its previous defaults, so any old caller that doesn't
+  yet know about playable-rect alignment continues to work identically.

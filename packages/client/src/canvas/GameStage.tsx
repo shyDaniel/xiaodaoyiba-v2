@@ -451,22 +451,57 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
   );
 }
 
-/** Position houses + characters per FINAL_GOAL §C9 layout rules. Also
- *  records each character's homeX so EffectPlayer can derive RUSH/RETURN
- *  targets without re-querying React state. */
+/** Compute the y-band of the canvas the layout treats as "playable"
+ *  — i.e. not covered by the React chrome (header / player-chips strip
+ *  on top, HandPicker + BattleLog sheet toggle on the bottom). Pure
+ *  function exported for §H1 tests.
+ *
+ *  Position houses + characters per FINAL_GOAL §C9 layout rules. On
+ *  narrow viewports the React chrome (header + player-chips strip +
+ *  bottom-sheet HandPicker bar) overlays the canvas, so the *visible*
+ *  canvas area is smaller than `app.screen`. We reserve a top chrome
+ *  band (header + chips strip) and a bottom chrome band (HandPicker
+ *  + sheet toggle) and shrink/pack houses and characters into that
+ *  effective playable rect so every house + nameplate + ankle-briefs
+ *  renders fully on every (player_count ∈ {2..6}) × (viewport ∈
+ *  {1280×800, 375×667}) combination. */
+export function computePlayableRect(
+  w: number,
+  h: number,
+): { top: number; bottom: number } {
+  const narrow = w < 768;
+  const reserveTop = narrow ? 92 : 64;
+  // Bottom reserve must clear: HandPicker (~80px) + footer hint
+  // (~24px) + footer padding (~24px) + the sheet-toggle button
+  // (~36px height anchored at bottom:132). 132 + 36 = 168, plus some
+  // safety so the toggle's top edge doesn't kiss the character feet.
+  const reserveBottom = narrow ? 184 : 92;
+  const top = reserveTop;
+  const bottom = Math.max(top + 200, h - reserveBottom);
+  return { top, bottom };
+}
+
 function layoutPlayers(refs: SceneRefs): void {
   const w = refs.app.screen.width;
   const h = refs.app.screen.height;
-  const groundY = refs.ground.groundY;
   const ids = Array.from(refs.houses.keys());
   const n = ids.length;
   if (n === 0) return;
+
+  const { top: playableTop, bottom: playableBottom } = computePlayableRect(w, h);
+  const playableH = playableBottom - playableTop;
+
+  // Recompute the visual ground / horizon so the dirt road sits inside
+  // the playable rect — without this the front-row characters would
+  // appear to float above the painted ground line on mobile.
+  refs.ground.setBands(playableTop + playableH * 0.5, playableBottom - 12);
 
   // Anchor positions for houses (bottom-center) and characters (feet).
   // Strategy: spread houses across the upper portion of the gameplay band,
   // characters slightly forward of their houses standing on the road.
   // For 2: side-by-side. For 3: 2 back + 1 front. For 4: 4 back. For 5/6: fan.
-  const spots = computeSpots(n, w, h, groundY);
+  const spots = computeSpots(n, w, playableTop, playableBottom);
+
   for (let i = 0; i < n; i++) {
     const id = ids[i];
     if (id == null) continue;
@@ -475,6 +510,10 @@ function layoutPlayers(refs: SceneRefs): void {
     const house = refs.houses.get(id);
     const ch = refs.characters.get(id);
     if (house) {
+      // Re-size the house geometry so its native dimensions match the
+      // spot's allotted box — critical on narrow viewports where the
+      // default 200×220 native size would clip past the sheet.
+      house.resize(spot.houseW, spot.houseH);
       house.view.position.set(spot.houseX, spot.houseY);
       house.view.scale.set(spot.scale, spot.scale);
     }
@@ -504,44 +543,113 @@ function layoutPlayers(refs: SceneRefs): void {
   }
 }
 
-interface Spot {
+/** Per-station layout output. Exported for §H1 test coverage so the
+ *  spot bounding boxes can be asserted against the playable rect. */
+export interface Spot {
   houseX: number;
   houseY: number;
   charX: number;
   charY: number;
+  /** Native house geometry (House.draw uses these as bodyW/bodyH bases).
+   *  Adjusted per-viewport so the 200×220 default doesn't clip on
+   *  narrow phones — see §H1. */
+  houseW: number;
+  houseH: number;
   scale: number;
   facing: 1 | -1;
 }
 
-function computeSpots(n: number, w: number, h: number, groundY: number): Spot[] {
+/** Compute station spots within an explicit playable rect. The rect
+ *  excludes top chrome (header + player chips) and bottom chrome
+ *  (HandPicker + sheet toggle) so on narrow viewports houses do not
+ *  hide behind UI panels (FINAL_GOAL §H1).
+ *
+ *  House extents (post-draw, anchor at bottom-center): the body covers
+ *  y ∈ [-bodyH, 0]; the roof peaks at y ≈ -bodyH - h*0.4; the plaque
+ *  ribbon adds ~32px above the roof. Total visual height ≈ 1.55*houseH.
+ *  Therefore for a target visual height H_vis we pick houseH = H_vis/1.55.
+ *  Character native height ≈ 128 from feet up; with baseScale=1.05*scale
+ *  the front-row needs charY - 134*scale ≥ playableTop. */
+export function computeSpots(
+  n: number,
+  w: number,
+  top: number,
+  bottom: number,
+): Spot[] {
   const spots: Spot[] = [];
-  // Houses sit ~60% up; their bottom anchor lands on the back ground band.
-  // Characters stand on the front ground band (groundY).
-  const horizon = h * 0.62;
-  const houseRowY = horizon + 8;
-  const frontRowY = groundY;
-
+  const playableH = bottom - top;
   const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 
+  // Cap visual heights to the playable rect. The "back row" plate
+  // mounts at ~50% of playable height; front row characters stand at
+  // (bottom - feetMargin). House visual must clear back-row character
+  // heads and not poke into front-row characters; we allot ~0.55 of
+  // playable height to back-row visual house extent.
+  const charNativeH = 128 * 1.05; // Character.ts head-top y = -128, baseScale = 1.05*scale
+  // Maximum scale that lets a 1.0-scale character fit inside playableH
+  // with a small safety margin. On a 375×667 phone with reserves
+  // 92/184, playableH ≈ 391; default scale 1.0 would give the front
+  // row 134px of character — fine. The constraint is the back-row
+  // house+character stack fitting above front row.
+  const maxScale = Math.min(1.0, (playableH - 16) / (charNativeH * 1.5 + 240));
+
+  // Default house geometry — tuned for desktop 1280×800. We narrow it
+  // down for mobile / >2 players (more bodies → less width per body).
+  const baseHouseW = 200;
+  const baseHouseH = 220;
+
+  // Row Y positions inside the playable rect. The original code
+  // anchored to the painted ground band (Ground.groundY) which lives
+  // at h*0.82 of the *full* canvas. On mobile that x is clipped by
+  // the bottom sheet. We anchor instead to the playable rect: front
+  // row characters' feet at `bottom - 8`, back row at the playable
+  // midpoint.
+  const frontRowY = bottom - 8;
+  const horizon = top + playableH * 0.5;
+  const houseRowY = horizon + 8;
+
+  // Per-row house native geometry. Character feet ride at frontRowY;
+  // house bottoms ride at houseRowY (back) or houseRowY + offset.
+  // Cap per-spot height so the house's visual extent (≈ 1.55*houseH
+  // including the roof + plaque) never exceeds the available space
+  // above frontRowY for that row.
+  const fitHouseH = (rowY: number, scaleHint: number): number => {
+    const visAbove = rowY - top - 8; // px above the row anchor
+    const naturalVisH = baseHouseH * 1.55 * scaleHint;
+    if (naturalVisH <= visAbove) return baseHouseH;
+    return Math.max(120, (visAbove / 1.55) / scaleHint);
+  };
+  const fitHouseW = (perPlayer: number): number => {
+    return Math.min(baseHouseW, Math.max(110, perPlayer * 0.78));
+  };
+
   if (n === 1) {
+    const sc = Math.min(1.0, maxScale);
     spots.push({
       houseX: w * 0.5,
       houseY: houseRowY,
       charX: w * 0.5,
       charY: frontRowY,
-      scale: 1.0,
+      houseW: fitHouseW(w),
+      houseH: fitHouseH(houseRowY, sc),
+      scale: sc,
       facing: 1,
     });
     return spots;
   }
 
   if (n === 2) {
+    const sc = Math.min(1.0, maxScale);
+    const hw = fitHouseW(w / 2);
+    const hh = fitHouseH(houseRowY, sc);
     spots.push({
       houseX: w * 0.28,
       houseY: houseRowY,
       charX: w * 0.32,
       charY: frontRowY,
-      scale: 1.0,
+      houseW: hw,
+      houseH: hh,
+      scale: sc,
       facing: 1,
     });
     spots.push({
@@ -549,92 +657,149 @@ function computeSpots(n: number, w: number, h: number, groundY: number): Spot[] 
       houseY: houseRowY,
       charX: w * 0.68,
       charY: frontRowY,
-      scale: 1.0,
+      houseW: hw,
+      houseH: hh,
+      scale: sc,
       facing: -1,
     });
     return spots;
   }
 
   if (n === 3) {
-    // Triangle: apex back-center, two front
+    // Triangle: apex back-center (smaller), two front (bigger).
+    const backSc = Math.min(0.85, maxScale * 0.85);
+    const frontSc = Math.min(1.0, maxScale);
+    const apexRowY = houseRowY - 30;
+    const baseRowY = houseRowY + 18;
+    const frontHW = fitHouseW(w / 2);
     spots.push({
       houseX: w * 0.5,
-      houseY: houseRowY - 30,
+      houseY: apexRowY,
       charX: w * 0.5,
       charY: lerp(horizon, frontRowY, 0.4),
-      scale: 0.85,
+      houseW: fitHouseW(w * 0.5),
+      houseH: fitHouseH(apexRowY, backSc),
+      scale: backSc,
       facing: 1,
     });
     spots.push({
       houseX: w * 0.22,
-      houseY: houseRowY + 30,
+      houseY: baseRowY,
       charX: w * 0.28,
       charY: frontRowY,
-      scale: 1.0,
+      houseW: frontHW,
+      houseH: fitHouseH(baseRowY, frontSc),
+      scale: frontSc,
       facing: 1,
     });
     spots.push({
       houseX: w * 0.78,
-      houseY: houseRowY + 30,
+      houseY: baseRowY,
       charX: w * 0.72,
       charY: frontRowY,
-      scale: 1.0,
+      houseW: frontHW,
+      houseH: fitHouseH(baseRowY, frontSc),
+      scale: frontSc,
       facing: -1,
     });
     return spots;
   }
 
   if (n === 4) {
-    // Square corners — 2 back, 2 front
+    // Two rows of two — back row smaller and tucked deeper into the
+    // horizon so all four houses fit width-wise even on a 375px phone.
+    const backSc = Math.min(0.85, maxScale * 0.85);
+    const frontSc = Math.min(1.0, maxScale);
+    const backHW = fitHouseW(w / 2);
+    const frontHW = fitHouseW(w / 2);
+    const backRowY = houseRowY - 18;
+    const frontPlateY = lerp(horizon, frontRowY, 0.5);
+    // Front row needs to be far enough below the back row that the
+    // back-row house's roof+plaque does not poke into the front-row
+    // character heads. ~64 px gap on desktop; less on mobile.
+    const frontHouseY = Math.max(
+      backRowY + 70,
+      Math.min(houseRowY + 60, frontRowY - 24),
+    );
     spots.push({
       houseX: w * 0.28,
-      houseY: houseRowY - 18,
+      houseY: backRowY,
       charX: w * 0.3,
-      charY: lerp(horizon, frontRowY, 0.5),
-      scale: 0.85,
+      charY: frontPlateY,
+      houseW: backHW,
+      houseH: fitHouseH(backRowY, backSc),
+      scale: backSc,
       facing: 1,
     });
     spots.push({
       houseX: w * 0.72,
-      houseY: houseRowY - 18,
+      houseY: backRowY,
       charX: w * 0.7,
-      charY: lerp(horizon, frontRowY, 0.5),
-      scale: 0.85,
+      charY: frontPlateY,
+      houseW: backHW,
+      houseH: fitHouseH(backRowY, backSc),
+      scale: backSc,
       facing: -1,
     });
     spots.push({
       houseX: w * 0.18,
-      houseY: houseRowY + 60,
+      houseY: frontHouseY,
       charX: w * 0.22,
       charY: frontRowY,
-      scale: 1.0,
+      houseW: frontHW,
+      houseH: fitHouseH(frontHouseY, frontSc),
+      scale: frontSc,
       facing: 1,
     });
     spots.push({
       houseX: w * 0.82,
-      houseY: houseRowY + 60,
+      houseY: frontHouseY,
       charX: w * 0.78,
       charY: frontRowY,
-      scale: 1.0,
+      houseW: frontHW,
+      houseH: fitHouseH(frontHouseY, frontSc),
+      scale: frontSc,
       facing: -1,
     });
     return spots;
   }
 
-  // 5–6 players: fan / semicircle
-  const radius = w * 0.36;
+  // 5–6 players: fan / semicircle. We arrange stations on an arc that
+  // stays inside the playable rect: center the arc on (w/2, bottom)
+  // and clamp the radius so the lowest stations land at frontRowY and
+  // the leftmost / rightmost houses do not slide off the canvas edges.
   const cx = w * 0.5;
-  const cy = h * 0.95;
+  const cy = bottom + 8;
+  // Arc radius: the bottommost station should sit at frontRowY, the
+  // topmost should not exceed top + 24. Pick a radius that fits both.
+  const maxRy = (frontRowY - top - 24) / 0.55; // since y = cy + sin(a)*r*0.55, sin~-1
+  const radiusY = Math.min(maxRy, playableH * 1.6);
+  // Horizontal radius is bounded so the outermost station's *visible*
+  // edge — center ± half_house_width_at_back_scale — stays inside the
+  // canvas. half_visible ≈ baseHouseW * 0.78/2 * 0.72*maxScale + 16.
+  const backScale = 0.72 * maxScale;
+  const halfHouseAtBack = (baseHouseW * 0.78) / 2 + 16;
+  const xMargin = 6 + halfHouseAtBack * backScale;
+  const radiusX = Math.min(w * 0.42, radiusY * 0.95, w / 2 - xMargin);
+
   for (let i = 0; i < n; i++) {
-    const a = lerp(Math.PI + 0.3, -0.3, i / (n - 1));
-    const x = cx + Math.cos(a) * radius;
-    const y = cy + Math.sin(a) * radius * 0.55;
+    const a = lerp(Math.PI + 0.25, -0.25, i / (n - 1));
+    const x = cx + Math.cos(a) * radiusX;
+    const yRaw = cy + Math.sin(a) * radiusY * 0.55;
+    // Distance-from-camera shading: front (lower) bigger, back (higher)
+    // smaller. Map y∈[top, frontRowY] → scale∈[0.7*max, 1.0*max].
+    const t = Math.max(0, Math.min(1, (yRaw - top) / (frontRowY - top)));
+    const sc = Math.min(maxScale, lerp(0.72, 1.0, t) * maxScale);
+    const charY = Math.min(frontRowY, Math.max(top + 24, yRaw));
+    const houseY = Math.max(top + 16, charY - 130 * sc);
     spots.push({
       houseX: x,
-      houseY: Math.max(houseRowY - 30, y - 130),
+      houseY,
       charX: x,
-      charY: y,
-      scale: 0.8 + 0.2 * (i / n),
+      charY,
+      houseW: fitHouseW(w / Math.max(3, n - 1)),
+      houseH: fitHouseH(houseY, sc),
+      scale: sc,
       facing: x < cx ? 1 : -1,
     });
   }

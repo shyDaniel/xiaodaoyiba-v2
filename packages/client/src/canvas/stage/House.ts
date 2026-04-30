@@ -23,9 +23,14 @@ export class House {
   private readonly plaque: Container;
   private hp = 100;
   readonly ownerId: string;
+  /** Cached opts so resize() can re-draw with the same owner identity
+   *  but new geometry (FINAL_GOAL §H1 — narrow viewports need smaller
+   *  houses so they don't clip the bottom-sheet). */
+  private opts: HouseOptions;
 
   constructor(opts: HouseOptions) {
     this.ownerId = opts.ownerId;
+    this.opts = opts;
     this.view = new Container();
     this.body = new Graphics();
     this.damage = new Graphics();
@@ -44,6 +49,17 @@ export class House {
 
   reset(): void {
     this.hp = 100;
+    this.redrawDamage();
+  }
+
+  /** Re-draw with new native dimensions. No-op if dimensions are
+   *  unchanged so resize-during-frame callers don't pay redraw cost. */
+  resize(width: number, height: number): void {
+    const w = Math.max(80, Math.round(width));
+    const h = Math.max(90, Math.round(height));
+    if (w === this.opts.width && h === this.opts.height) return;
+    this.opts = { ...this.opts, width: w, height: h };
+    this.draw(this.opts);
     this.redrawDamage();
   }
 

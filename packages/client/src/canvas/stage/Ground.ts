@@ -12,6 +12,13 @@ export class Ground {
 
   /** Y coordinate (in world space) of the horizon — characters stand on this. */
   groundY = 0;
+  /** Override of the horizon line. When non-null `draw()` honors this
+   *  instead of the default `h * 0.62` band. Used by GameStage to align
+   *  the painted ground with the playable rect on narrow viewports
+   *  (FINAL_GOAL §H1). */
+  private horizonOverride: number | null = null;
+  /** Override of groundY (front row baseline). */
+  private groundYOverride: number | null = null;
 
   constructor(width: number, height: number) {
     this.view = new Container();
@@ -28,13 +35,26 @@ export class Ground {
     this.draw();
   }
 
+  /** Set explicit horizon + ground Y bands. Called from GameStage's
+   *  layoutPlayers() so the painted ground sits inside the playable
+   *  rect (canvas height minus header / bottom-sheet chrome). */
+  setBands(horizonY: number, groundY: number): void {
+    const h = this.height;
+    const horizon = clamp(horizonY, 0, h);
+    const ground = clamp(groundY, horizon + 8, h);
+    if (this.horizonOverride === horizon && this.groundYOverride === ground) return;
+    this.horizonOverride = horizon;
+    this.groundYOverride = ground;
+    this.draw();
+  }
+
   private draw(): void {
     const g = this.g;
     g.clear();
     const w = this.width;
     const h = this.height;
-    const horizon = h * 0.62;
-    this.groundY = h * 0.82;
+    const horizon = this.horizonOverride ?? h * 0.62;
+    this.groundY = this.groundYOverride ?? h * 0.82;
 
     // Far ground band (tints to the horizon)
     g.rect(0, horizon, w, h - horizon).fill({ color: palette.groundDark });
@@ -92,6 +112,10 @@ export class Ground {
 
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
 }
 
 function lerpColor(a: number, b: number, t: number): number {
