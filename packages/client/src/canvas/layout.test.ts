@@ -57,9 +57,17 @@ function charBox(spot: ReturnType<typeof computeSpots>[number]): Box {
   };
 }
 
+// §H1 (S-411) — these are the *canvas DOM* inner dimensions, not the
+// raw viewport. After S-411 the React chrome (PlayerRail chips column,
+// HandPicker footer, BattleLog rail/sheet) sits in its own grid cell
+// outside the canvas, so the canvas is bounded by:
+//   Desktop 1280×800: top=0 left=144 bottom=184 right=360 → 776×616
+//   Mobile  375×667 : top=112 left=0 bottom=200 right=0  → 375×355
+// (See MultiGame.tsx + Game.tsx for the canvasTopInset / Left / Bottom
+// constants.) computePlayableRect is invoked with these dimensions.
 const VIEWPORTS: Array<{ w: number; h: number; tag: string }> = [
-  { w: 1280, h: 800, tag: 'desktop-1280x800' },
-  { w: 375, h: 667, tag: 'mobile-375x667' },
+  { w: 776, h: 616, tag: 'desktop-canvas-776x616' },
+  { w: 375, h: 355, tag: 'mobile-canvas-375x355' },
 ];
 const PLAYER_COUNTS = [2, 3, 4, 5, 6];
 
@@ -253,27 +261,31 @@ describe('§H1 mobile + desktop layout: no clipping for 2..6 players × {1280×8
   }
 });
 
-// §H1 (S-401): with the desktop PlayerRail occupying chromeLeft=160px
-// of the canvas, the leftmost station's character body must lie
-// entirely to the right of the chrome boundary so the rail panel
-// does not occlude the leftmost player. On mobile the rail wraps
-// above the canvas and chromeLeft is only 8px so this is trivial.
-describe('§H1 chrome-aware layout: leftmost station clears PlayerRail (desktop)', () => {
-  test('computeChromeMargins desktop reserves 160 px on the left', () => {
+// §H1 (S-411): the desktop PlayerRail and HandPicker now sit in their
+// own grid cells outside the Pixi canvas (see MultiGame.tsx +
+// Game.tsx) — the canvas DOM is bounded by `left:railLeft, right:
+// railOffset, bottom:footerH` so no React panel ever overlays a
+// station. The chromeMargins helper now returns only a small visual
+// gutter (12 px desktop, 8 px mobile) so the outermost station's
+// silhouette doesn't kiss the canvas edge.
+describe('§H1 chrome-aware layout: stations sit inside the canvas with cosmetic gutter', () => {
+  test('computeChromeMargins desktop is a small cosmetic gutter', () => {
     const m = computeChromeMargins(1280);
-    expect(m.left).toBeGreaterThanOrEqual(140);
+    expect(m.left).toBeGreaterThanOrEqual(8);
+    expect(m.left).toBeLessThan(40);
     expect(m.right).toBeGreaterThanOrEqual(8);
+    expect(m.right).toBeLessThan(40);
   });
-  test('computeChromeMargins mobile reserves only a small gutter', () => {
+  test('computeChromeMargins mobile is a small cosmetic gutter', () => {
     const m = computeChromeMargins(375);
     expect(m.left).toBeLessThan(40);
     expect(m.right).toBeLessThan(40);
   });
 
   for (const n of PLAYER_COUNTS) {
-    test(`desktop-1280x800 ${n} players: every station sits inside [chromeLeft, w-chromeRight]`, () => {
-      const w = 1280;
-      const h = 800;
+    test(`desktop-canvas-776x616 ${n} players: every station sits inside [chromeLeft, w-chromeRight]`, () => {
+      const w = 776;
+      const h = 616;
       const { left, right } = computeChromeMargins(w);
       const { top: pTop, bottom: pBottom } = computePlayableRect(w, h);
       const spots = computeSpots(n, w, pTop, pBottom, left, right);
@@ -281,9 +293,8 @@ describe('§H1 chrome-aware layout: leftmost station clears PlayerRail (desktop)
         const s = spots[i]!;
         const cb = charBox(s);
         const hb = houseBox(s);
-        // Every spot's char box must be entirely to the right of
-        // the chrome's left edge (so the PlayerRail panel does not
-        // overlap the leftmost character body).
+        // Every spot's char box must sit inside the canvas with the
+        // cosmetic gutter respected on both sides.
         expect(
           cb.left,
           `n=${n} i=${i} char left vs chromeLeft`,
@@ -292,7 +303,7 @@ describe('§H1 chrome-aware layout: leftmost station clears PlayerRail (desktop)
           cb.right,
           `n=${n} i=${i} char right vs chromeRight`,
         ).toBeLessThanOrEqual(w - right + 1);
-        // House body too.
+        // House body too — small overdraw tolerated for the eaves.
         expect(
           hb.left,
           `n=${n} i=${i} house left vs chromeLeft`,

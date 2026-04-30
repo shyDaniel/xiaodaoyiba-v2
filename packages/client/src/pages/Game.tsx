@@ -481,6 +481,13 @@ export function GamePage({ onExit }: { onExit?: () => void } = {}): JSX.Element 
   // mobile the BattleLog is a bottom sheet (default collapsed) so the
   // canvas spans the full width.
   const railOffset = isMobile ? '0px' : 'min(30vw, 360px)';
+  // §H1 (S-411) canvas inset — see MultiGame.tsx for the rationale.
+  // The canvas DOM is bounded so React chrome (PlayerRail chips strip,
+  // HandPicker footer, BattleLog bottom-sheet on mobile) never
+  // overlays a station. layout.ts only adds a small cosmetic gutter.
+  const canvasTopInset = isMobile ? 112 : 0;
+  const canvasLeftInset = isMobile ? 0 : 144;
+  const canvasBottomInset = isMobile ? 200 : 184;
 
   return (
     <div
@@ -504,13 +511,15 @@ export function GamePage({ onExit }: { onExit?: () => void } = {}): JSX.Element 
         }
       `}</style>
 
-      {/* Stage host — sized so the BattleLog right rail doesn't overlap. */}
+      {/* Stage host — bounded by canvasTopInset / canvasLeftInset /
+          canvasBottomInset / railOffset so React chrome never overlays
+          a station (§H1 S-411). */}
       <div
         style={{
           position: 'absolute',
-          top: 0,
-          left: 0,
-          bottom: 0,
+          top: canvasTopInset,
+          left: canvasLeftInset,
+          bottom: canvasBottomInset,
           right: railOffset,
         }}
       >

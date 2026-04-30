@@ -344,6 +344,21 @@ export function MultiGamePage(): JSX.Element {
   // when the snapshot first arrives.
   const isMobile = useIsMobile();
   const railOffset = isMobile ? '0px' : 'min(30vw, 360px)';
+  // §H1 (S-411) canvas inset — the React chrome (PlayerRail chips
+  // strip, HandPicker footer, BattleLog bottom-sheet on mobile) used
+  // to overlay the canvas, occluding leftmost / bottom-row characters.
+  // Now the canvas DOM is bounded by these inset values so its
+  // drawable rect equals its visible rect; layout.ts only adds a small
+  // cosmetic gutter on top.
+  //   Desktop: PlayerRail chips column ≈140 px wide on the left;
+  //            footer (HandPicker + label) ≈180 px on the bottom.
+  //            (left inset kept ≤ (1280 - railOffset - 768) so the
+  //            canvas inner width stays in the wide-layout codepath.)
+  //   Mobile : PlayerRail chips strip ≈60 px on the top (under header);
+  //            HandPicker footer + BattleLog toggle ≈200 px on the bottom.
+  const canvasTopInset = isMobile ? 112 : 0;
+  const canvasLeftInset = isMobile ? 0 : 144;
+  const canvasBottomInset = isMobile ? 200 : 184;
 
   if (!snapshot) {
     return (
@@ -390,9 +405,9 @@ export function MultiGamePage(): JSX.Element {
       <div
         style={{
           position: 'absolute',
-          top: 0,
-          left: 0,
-          bottom: 0,
+          top: canvasTopInset,
+          left: canvasLeftInset,
+          bottom: canvasBottomInset,
           right: railOffset,
         }}
       >

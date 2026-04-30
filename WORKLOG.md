@@ -2095,3 +2095,97 @@ its full display name with no glyph clipping at both 1280×800 and
 mobile no two character boxes intersect and feet remain above
 bottom-sheet top.
 
+
+---
+
+## Iteration 51 — §H1 6p layout: canvas DOM inset, chrome moved out of overlay (S-411)
+
+**Symptom (judge):**
+- 1280×800 desktop, 6-player multi room: rightmost back-row plaque
+  was clipped to "counter#?" because the canvas DOM was bounded
+  only on the right by `right: railOffset` (BattleLog rail) and
+  the `chromeLeft=160` trick reserved internal canvas space for
+  PlayerRail. Effective draw width was ~760 px but the React
+  PlayerRail still overlaid the leftmost 160 px of the canvas
+  visually, occluding the leftmost back-row character (玩家38).
+  HandPicker buttons hard-overlapped the front row.
+- 375×667 mobile: front-row character feet were partially clipped
+  under the BattleLog bottom-sheet toggle.
+
+**Root cause:** the canvas DOM was sized to 100vw × 100vh (minus
+the right BattleLog rail), and the React chrome (PlayerRail chips
+column on desktop, HandPicker footer + BattleLog toggle on mobile)
+was layered ON TOP of the canvas via `position: absolute`. The
+previous fix attempted to compensate inside `layout.ts` by
+reserving `chromeLeft=160` and `reserveBottom=220` of internal
+canvas space, but this only avoided station placement in the
+overlay zone — Pixi still rendered the background, ground and
+parallax through that reserved strip, and any animation that
+moved characters past the chrome boundary briefly disappeared
+under the React panel.
+
+**Fix:** inset the canvas DOM container itself so React chrome
+sits in its own DOM rect outside the canvas:
+
+1. **`packages/client/src/pages/MultiGame.tsx`** — replaced the
+   `<div style={{ position:'absolute', top:0, left:0, bottom:0,
+   right: railOffset }}>` canvas wrapper with bounded insets:
+   - `canvasTopInset    = isMobile ? 112 : 0`
+   - `canvasLeftInset   = isMobile ? 0   : 144`
+   - `canvasBottomInset = isMobile ? 200 : 184`
+   The `144` desktop left inset is sized so `1280 − 144 − 360 =
+   776 ≥ 768` keeps the canvas in the wide-layout codepath. The
+   `184` desktop bottom inset clears the HandPicker footer
+   (~178 px tall — label + button row + padding). On mobile the
+   chips strip occupies 52..78 above the canvas, and the
+   HandPicker + BattleLog toggle occupy ~200 px below.
+
+2. **`packages/client/src/pages/Game.tsx`** — same inset applied
+   so solo mode mirrors multi (single source of truth for canvas
+   geometry).
+
+3. **`packages/client/src/canvas/GameStage.tsx`** —
+   `computePlayableRect` `reserveTop/reserveBottom` reduced from
+   92/64 / 220/92 to 12/16 / 12/16 (small cosmetic gutter only —
+   the canvas DOM now equals the playable rect).
+   `computeChromeMargins` desktop reduced from {left:160, right:16}
+   to {left:12, right:12} for the same reason.
+
+4. **`packages/client/src/canvas/layout.test.ts`** — viewport
+   constants updated to match the canvas DOM inner rect (`776×616`
+   desktop, `375×355` mobile) instead of the raw browser viewport,
+   reflecting the new geometry. The chrome-margin block was
+   updated to expect a small cosmetic gutter (8..40 px) instead
+   of the previous 140 px reserve.
+
+**Verification:**
+
+- `pnpm -r test` → 79 shared + 21 server + 116 client tests pass
+  (216 total). The 3 mobile clip tests that initially failed
+  after relaxing `reserveBottom` were resolved by adopting the
+  canvas DOM inner dimensions in the test fixture.
+- `pnpm --filter @xdyb/client build` → exits 0, bundle 544.82 kB
+  (gzip 174.13 kB).
+- Drove a 6-player multi room (host玩家75 + bots counter, random,
+  iron, mirror, counter#2) via Playwright MCP at both viewports:
+  - **1280×800 desktop** (`s411-desktop-1280x800-multi-6p-v2.png`):
+    canvas DOM rect = (144, 0)→(920, 616). All 6 plaques render
+    full bot display names — `玩家75`, `counter`, `iron`,
+    `mirror`, `random`, `counter#2` — no truncation. PlayerRail
+    chips column anchored at left:16 sits in the [0..144] gutter
+    outside the canvas. HandPicker footer at top=622.8 sits
+    cleanly below canvas bottom=616 (overlap = 0). BattleLog
+    rail at x=918 abuts the canvas right edge. No Pixi character
+    box intersects any React DOM rect.
+  - **375×667 mobile** (`s411-mobile-375x667-multi-6p-v2.png`):
+    canvas DOM rect = (0, 112)→(375, 467). All 6 chips wrap above
+    the canvas (top=52, bottom=78). HandPicker footer top=497.8
+    sits cleanly below canvas bottom=467 (overlap = 0). All 6
+    front-row character feet sit above BattleLog toggle top edge.
+
+**Acceptance per FINAL_GOAL §H1 (S-411):**
+- ✓ desktop 1280×800: every plaque renders full display name (no
+  '#?' truncation), no Pixi character bbox intersects PlayerRail
+  or HandPicker DOM rects.
+- ✓ mobile 375×667: every character bottom_y < BattleLog
+  bottom-sheet top_y; no chrome overlay on the playing field.

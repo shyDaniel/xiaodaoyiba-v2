@@ -470,30 +470,28 @@ export function computePlayableRect(
   h: number,
 ): { top: number; bottom: number } {
   const narrow = w < 768;
-  const reserveTop = narrow ? 92 : 64;
-  // Bottom reserve must clear: HandPicker (~80px) + footer hint
-  // (~24px) + footer padding (~24px) + the sheet-toggle button
-  // (~36px height anchored at bottom:132). 132 + 36 = 168, plus some
-  // safety so the toggle's top edge doesn't kiss the character feet.
-  // §H1 (S-401): on mobile the BattleLog sheet-toggle button extends
-  // ~52 px above the HandPicker; bump bottom reserve so the front-row
-  // character feet always sit above the toggle's top edge (the judge
-  // observed front-row feet clipped under the bottom-sheet at 375×667).
-  const reserveBottom = narrow ? 220 : 92;
+  // §H1 (S-411): the canvas DOM is now positioned in its own grid
+  // cell — header + chips strip occupy a row above it, HandPicker
+  // and BattleLog bottom-sheet toggle occupy a row below it (see
+  // MultiGame.tsx + Game.tsx). The Pixi canvas drawable rect IS
+  // the playable rect; we only keep a small interior gutter so
+  // the outermost station's body doesn't kiss the canvas edge.
+  const reserveTop = narrow ? 12 : 16;
+  const reserveBottom = narrow ? 12 : 16;
   const top = reserveTop;
   const bottom = Math.max(top + 200, h - reserveBottom);
   return { top, bottom };
 }
 
-/** Compute the horizontal chrome margins reserved for the React
- *  PlayerRail panel on each side of the canvas. On desktop the rail
- *  is a vertical column of player chips anchored at `left:16` over
- *  the canvas (see MultiGame.tsx); chips are ~140 px wide so we
- *  reserve 160 px on the left so the leftmost station's character
- *  body is fully visible to the right of the rail. On mobile the
- *  rail wraps as a flex-row above the playable rect (does not
- *  overlay the gameplay band), so we only reserve a small visual
- *  gutter. §H1 (S-401). */
+/** Horizontal canvas-internal gutter. After S-411 the React chrome
+ *  (PlayerRail player-chips strip on desktop, BattleLog bottom-sheet
+ *  + HandPicker bar on mobile) is positioned in its OWN grid cell
+ *  outside the Pixi canvas — see MultiGame.tsx + Game.tsx — so the
+ *  canvas DOM rect equals its drawable region. The remaining gutter
+ *  is purely cosmetic: a small inset so the outermost station's
+ *  silhouette doesn't kiss the canvas edge. The previous 160-px
+ *  desktop reserve is no longer needed because no React panel sits
+ *  on top of the leftmost stations. §H1. */
 export function computeChromeMargins(
   w: number,
 ): { left: number; right: number } {
@@ -501,9 +499,7 @@ export function computeChromeMargins(
   if (narrow) {
     return { left: 8, right: 8 };
   }
-  // Desktop: PlayerRail occupies left margin. 160 px clears a 140-px
-  // chip plus its 2-px ring border + 16-px DOM left offset.
-  return { left: 160, right: 16 };
+  return { left: 12, right: 12 };
 }
 
 function layoutPlayers(refs: SceneRefs): void {
