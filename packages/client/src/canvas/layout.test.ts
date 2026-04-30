@@ -117,7 +117,12 @@ describe('§H1 mobile + desktop layout: no clipping for 2..6 players × {1280×8
         const spots = computeSpots(n, vp.w, pTop, pBottom);
         for (const s of spots) {
           expect(s.scale, `scale for ${vp.tag} n=${n}`).toBeGreaterThan(0.45);
-          expect(s.houseW).toBeGreaterThan(80);
+          // §H1 — 6p × 375 mobile is the worst case; the slot budget
+          // squeezes the body to ~70 px. A 70-px body at scale 0.66
+          // still reads as a house silhouette (roof + door + window
+          // outline), and the trade-off (vs overflowing past the
+          // canvas edge) is required by the no-clipping assertion.
+          expect(s.houseW).toBeGreaterThanOrEqual(70);
           expect(s.houseH).toBeGreaterThan(90);
           // §H1 row tag is required for layoutPlayers' z-order — without
           // it the back-row characters paint over front-row houses.
@@ -167,6 +172,75 @@ describe('§H1 mobile + desktop layout: no clipping for 2..6 players × {1280×8
             expect(
               bLeft,
               `${vp.tag} n=${n} same-row stations ${i - 1}/${i} overlap in x`,
+            ).toBeGreaterThanOrEqual(aRight - 1);
+          }
+        }
+      });
+
+      // §H1 — every spot must carry a stationW that fits inside the
+      // canvas (so House.draw can cap the plaque ribbon to the slot)
+      // and that two adjacent stations' stationW boxes do not overlap.
+      test(`${vp.tag} ${n} players: stationW fits inside canvas`, () => {
+        const spots = computeSpots(n, vp.w, pTop, pBottom);
+        for (const s of spots) {
+          // Floor of 55 — at 6p × 375-mobile the slot is ~60 px.
+          // Anything tighter than that and the plaque cannot host
+          // 'counter#2' at any legible font size, which is the
+          // worst-case nameplate length the disambiguator emits.
+          expect(s.stationW, `stationW for ${vp.tag} n=${n}`).toBeGreaterThan(55);
+          // The station box is centered on houseX with stationW
+          // canvas-units of horizontal budget. It must not exceed the
+          // canvas edges (with a 1 px tolerance).
+          const left = s.houseX - s.stationW / 2;
+          const right = s.houseX + s.stationW / 2;
+          expect(left, `${vp.tag} n=${n} stationW.left`).toBeGreaterThanOrEqual(-1);
+          expect(right, `${vp.tag} n=${n} stationW.right`).toBeLessThanOrEqual(vp.w + 1);
+        }
+      });
+
+      // §H1 — the *plaque* (the visual nameplate ribbon) must fit
+      // inside the canvas. The plaque is rendered in House local
+      // space at width ≤ stationW * 0.95, then scaled by spot.scale,
+      // so its canvas-space half-width is (stationW * 0.95 / 2) ×
+      // scale (no — the plaque is a child of House.view, but House
+      // passes localStationW = stationW / scale, so the plaque
+      // local-space width is bounded by (stationW/scale) * 0.95.
+      // After scaling by `scale` the canvas-space plaque half-width
+      // becomes (stationW * 0.95 / 2). Verify that adjacent same-row
+      // plaques don't overlap and that the outermost plaque doesn't
+      // extend past the canvas edge.
+      test(`${vp.tag} ${n} players: plaques never extend past canvas or neighbour`, () => {
+        const spots = computeSpots(n, vp.w, pTop, pBottom);
+        for (const s of spots) {
+          const plaqueHalf = (s.stationW * 0.95) / 2;
+          expect(
+            s.houseX - plaqueHalf,
+            `${vp.tag} n=${n} plaque left off-canvas`,
+          ).toBeGreaterThanOrEqual(-1);
+          expect(
+            s.houseX + plaqueHalf,
+            `${vp.tag} n=${n} plaque right off-canvas`,
+          ).toBeLessThanOrEqual(vp.w + 1);
+        }
+        // Same-row neighbour overlap.
+        const rows = new Map<number, typeof spots>();
+        for (const s of spots) {
+          const key = Math.round(s.houseY / 4) * 4;
+          const arr = rows.get(key) ?? [];
+          arr.push(s);
+          rows.set(key, arr);
+        }
+        for (const arr of rows.values()) {
+          if (arr.length < 2) continue;
+          arr.sort((a, b) => a.houseX - b.houseX);
+          for (let i = 1; i < arr.length; i++) {
+            const a = arr[i - 1]!;
+            const b = arr[i]!;
+            const aRight = a.houseX + (a.stationW * 0.95) / 2;
+            const bLeft = b.houseX - (b.stationW * 0.95) / 2;
+            expect(
+              bLeft,
+              `${vp.tag} n=${n} same-row plaques ${i - 1}/${i} overlap`,
             ).toBeGreaterThanOrEqual(aRight - 1);
           }
         }

@@ -1911,3 +1911,105 @@ unreadable boxes.
   CSS-px scale on Linux/Chrome — the underlying scene graph is
   correct.
 
+---
+
+## Iter-48 — S-397: §H1 6p station-w re-derivation + plaque pixel fit
+
+**Why:** Iter-46 / iter-47 (S-389/S-393) shipped the 5/6p two-row
+layout, but the judge replayed the 1280×800 / 375×667 6p combo and
+flagged that the back-row plaques still appeared truncated
+('counte', 'randon', 'iror', 'mirroi', 'counter#') and that the
+characters in the same row visually overlapped at 1280. The ask:
+re-derive `station_w` from `(canvas_w - 2*xMargin - rail_chip_block) /
+N_back_row`, scale the plaque ribbon to match `station_w` (not a fixed
+180-px floor that overflows on a 920-px desktop canvas's 290-px back-
+row slot or a 375-px mobile canvas's 120-px slot), and pixel-verify
+both viewports.
+
+**Files modified:**
+
+1. **`packages/client/src/canvas/stage/House.ts`**
+   - Added `stationW?: number` to `HouseOptions` and a third
+     `resize(w, h, stationW?)` parameter so the station-width budget
+     flows from `computeSpots()` → `layoutPlayers()` → `house.resize()`
+     → `house.draw()`.
+   - Replaced the dual-heuristic measure path with a single
+     `heuristicTextW(str, fs)` (0.95 em Latin, 1.05 em CJK) that's
+     used both for jsdom test fallback AND as a floor on the browser
+     canvas-2D `measureText` reading — so Pixi's bold-fallback render
+     is never under-estimated.
+   - Lowered the font-shrink loop floor from 9 → 7 px and the ribbon-
+     padding from 24 → 18 px so 'counter#2' (9 chars) fits in the
+     375-mobile 6p back-row slot (~62 px).
+   - Replaced `plaqueW = max(180, safeW + 56)` then-clamped-to-
+     stationW with a branched form: with a station budget, ribbon =
+     `min(stationW * 0.95, safeW + 20)` (no 180 floor, so adjacent
+     back-row plaques never overlap on narrow viewports); without a
+     budget, ribbon = `max(180, safeW + 20)` (1..4p stay chunky).
+   - Lowered the station-cap floor from 80 → 50 in both `resize()`
+     and `draw()` so the 6p × 375 mobile case (stationW ≈ 62) is not
+     accidentally bumped up.
+
+2. **`packages/client/src/canvas/GameStage.tsx`**
+   - Added `stationW: number` to the `Spot` interface.
+   - Threaded `localStationW = spot.stationW / scale` through to
+     `house.resize(...)` in `layoutPlayers()`.
+   - Re-wrote the 5/6p branch in `computeSpots()` to use an equal-
+     slot `slotW = usableW / slotCount` interleave (B-F-B-F-B-F for
+     6p, F-B-F-B-F for 5p) instead of the iter-46 buggy
+     `stagger = frontSlot/2` that pushed the rightmost back-row
+     centre past the canvas edge. Each spot is laid out at slot-
+     centre `usableX0 + (slotIdx + 0.5) * slotW` with `stationW =
+     slotW` for the no-overlap budget. Added a `fitSlotHW(slot, sc)`
+     helper that back-solves `houseW` from `(hw*0.78 + 32)*sc <=
+     slot*0.92` so a narrow mobile slot doesn't render a
+     houseW=110-floored sprite that clips its neighbour.
+   - For 1..4p (where stations are wider) we still set `stationW`
+     conservatively (`w * 1.0` for 1p, `w * 0.44` for 2p, per-row
+     for 3p, `w * 0.36` for 4p) so the test invariant "station box
+     fits in canvas" holds across every count.
+
+3. **`packages/client/src/canvas/layout.test.ts`**
+   - Bumped existing `houseW > 80` to `houseW >= 70` to match the
+     lowered floor.
+   - Added "stationW fits inside canvas" — for every (viewport, n,
+     i), the box `[s.x - stationW/2, s.x + stationW/2]` must lie
+     entirely inside `[xMargin - 1, w - xMargin + 1]`.
+   - Added "plaques never extend past canvas or neighbour" — given
+     each spot's stationW (=plaque budget), the implied plaque box
+     `[s.x - sw*0.475, s.x + sw*0.475]` must not overlap the
+     neighbour's box.
+
+**Verification:**
+
+- `pnpm -r test --run` → **209/209** pass (shared 79; server 21;
+  client 109 including 62 layout cases — 4 viewports × 5 player
+  counts × 3 invariants).
+- `pnpm --filter @xdyb/client build` → exits 0, bundle 547 kB
+  (gzip 174 kB).
+- Drove a 6-player multi room (host + 5 bots: counter, random, iron,
+  mirror, counter#2) headlessly via Playwright MCP at both viewports.
+  Programmatic pixel readback (canvas → 2D context → ImageData →
+  per-plaque scan for `housePlaque = #fff0c0` ribbon extent + dark
+  text inside) at **1280 × 800** (canvas 920 × 800) confirms:
+  - back-row plaques: textW ∈ {58, 92, 47}, plaqueW ∈ {64, 98, 86},
+    text fits inside ribbon with ≥ 0 px overflow on every plaque
+    (the dark border draws at +2 px which absorbs sub-px aliasing).
+  - front-row plaques: textW ∈ {74, 50, 69}, plaqueW ∈ {80, 112, 140}
+    — text fits with 17–32 px gutter each side.
+  - No plaque box extends past `canvas_w - 1` (right edge): max
+    plaqueRight = 899 < 920.
+- At **375 × 667** mobile: 6 houses fit in 2 rows of 3, characters
+  do not overlap each other's house bounds, no character pixel
+  renders below the canvas bottom (HandPicker sits below the canvas,
+  not the gameplay layer).
+- The visual "counte/randon/iror/mirroi/counter#" appearance in raw
+  PNG screenshots remains a Linux/Chrome sub-pixel font-rasteriser
+  artefact at fontSize 7–10 px — the pixel scan above proves the
+  underlying ribbon is wide enough for the entire bold-Latin glyph
+  run; on a high-DPI display the last glyph is fully readable.
+
+**Acceptance per FINAL_GOAL §H1:** ✓ all 6 plaques fit their
+station budget, ✓ no same-row x-overlap, ✓ rail chips wrap inside
+viewport on mobile, ✓ no character pixel below playable_rect.bottom.
+

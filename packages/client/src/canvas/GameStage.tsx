@@ -530,8 +530,12 @@ function layoutPlayers(refs: SceneRefs): void {
     if (house) {
       // Re-size the house geometry so its native dimensions match the
       // spot's allotted box — critical on narrow viewports where the
-      // default 200×220 native size would clip past the sheet.
-      house.resize(spot.houseW, spot.houseH);
+      // default 200×220 native size would clip past the sheet. We
+      // also pass the station width budget (pre-scale, since the
+      // plaque is rendered in local space and then scaled by the
+      // parent — divide by `spot.scale` to compensate). §H1.
+      const localStationW = spot.stationW / Math.max(0.001, spot.scale);
+      house.resize(spot.houseW, spot.houseH, localStationW);
       house.view.position.set(spot.houseX, spot.houseY);
       house.view.scale.set(spot.scale, spot.scale);
       house.view.zIndex = rowBase;
@@ -585,6 +589,13 @@ export interface Spot {
    *  to assign a row-based zIndex that guarantees back-row characters
    *  paint behind front-row houses (FINAL_GOAL §H1). */
   row: 0 | 1;
+  /** Per-station horizontal budget in canvas units (post-scale). The
+   *  House plaque ribbon is capped at `stationW * 0.95` so adjacent
+   *  5p/6p back-row plaques never overlap and never extend past the
+   *  canvas edge. The plaque is rendered in the house's *local* space
+   *  and then scaled by `scale`, so House.resize() is passed
+   *  `stationW / scale` to compensate. §H1. */
+  stationW: number;
 }
 
 /** Compute station spots within an explicit playable rect. The rect
@@ -663,6 +674,7 @@ export function computeSpots(
       scale: sc,
       facing: 1,
       row: 1,
+      stationW: w,
     });
     return spots;
   }
@@ -671,6 +683,7 @@ export function computeSpots(
     const sc = Math.min(1.0, maxScale);
     const hw = fitHouseW(w / 2);
     const hh = fitHouseH(houseRowY, sc);
+    const stationW2 = w * 0.44; // half the canvas minus a 6% gutter
     spots.push({
       houseX: w * 0.28,
       houseY: houseRowY,
@@ -681,6 +694,7 @@ export function computeSpots(
       scale: sc,
       facing: 1,
       row: 1,
+      stationW: stationW2,
     });
     spots.push({
       houseX: w * 0.72,
@@ -692,6 +706,7 @@ export function computeSpots(
       scale: sc,
       facing: -1,
       row: 1,
+      stationW: stationW2,
     });
     return spots;
   }
@@ -713,6 +728,7 @@ export function computeSpots(
       scale: backSc,
       facing: 1,
       row: 0,
+      stationW: w * 0.5,
     });
     spots.push({
       houseX: w * 0.22,
@@ -724,6 +740,7 @@ export function computeSpots(
       scale: frontSc,
       facing: 1,
       row: 1,
+      stationW: w * 0.42,
     });
     spots.push({
       houseX: w * 0.78,
@@ -735,6 +752,7 @@ export function computeSpots(
       scale: frontSc,
       facing: -1,
       row: 1,
+      stationW: w * 0.42,
     });
     return spots;
   }
@@ -755,6 +773,14 @@ export function computeSpots(
       backRowY + 70,
       Math.min(houseRowY + 60, frontRowY - 24),
     );
+    // Front-row outermost station sits at 0.18*w / 0.82*w. The
+    // station box is centered on the houseX, so the back-row
+    // station at 0.28*w sets the constraint stationW <= 0.56*w
+    // (centered there it can't pass canvas left edge), and the
+    // front-row station at 0.18*w sets stationW <= 0.36*w. Use
+    // the tighter of the two so every spot's plaque budget fits
+    // inside the canvas.
+    const stationW4 = w * 0.36;
     spots.push({
       houseX: w * 0.28,
       houseY: backRowY,
@@ -765,6 +791,7 @@ export function computeSpots(
       scale: backSc,
       facing: 1,
       row: 0,
+      stationW: stationW4,
     });
     spots.push({
       houseX: w * 0.72,
@@ -776,6 +803,7 @@ export function computeSpots(
       scale: backSc,
       facing: -1,
       row: 0,
+      stationW: stationW4,
     });
     spots.push({
       houseX: w * 0.18,
@@ -787,6 +815,7 @@ export function computeSpots(
       scale: frontSc,
       facing: 1,
       row: 1,
+      stationW: stationW4,
     });
     spots.push({
       houseX: w * 0.82,
@@ -798,6 +827,7 @@ export function computeSpots(
       scale: frontSc,
       facing: -1,
       row: 1,
+      stationW: stationW4,
     });
     return spots;
   }
@@ -822,49 +852,77 @@ export function computeSpots(
     Math.min(houseRowY + 60, frontRowY - 24),
   );
 
-  // Per-row width budget. The plaque widens with houseW (cap = houseW
-  // * 1.0), so to keep adjacent plaques non-overlapping we want
-  // perStationW ≥ houseW * 1.0 + 8 (an 8 px gutter). At 1280×800 with
-  // 3 stations per row, perStationW = (1280 - 32) / 3 = 416, so
-  // houseW ≤ ~408 — fitHouseW will cap to baseHouseW (200), well
-  // within budget. At 375×667 with 3 per row, perStationW ≈ (375 -
-  // 16) / 3 = 119; fitHouseW will floor to 110 and the plaque will
-  // shrink to ~110 × scale, leaving a small gutter.
+  // §H1 fix (S-397): re-derive station_w from the *actual* canvas
+  // playable width and place every station inside its own slot so
+  // adjacent plaques never collide and no station's plaque can
+  // extend past the canvas edge. Two cases:
+  //
+  //   6p (3 back + 3 front) — the rows interleave B-F-B-F-B-F along
+  //   x, so we slice usableW into n=6 equal slots and assign back to
+  //   slots 0, 2, 4 and front to slots 1, 3, 5. Each station's
+  //   stationW = usableW/n, regardless of row.
+  //
+  //   5p (2 back + 3 front) — usableW splits into 5 equal slots,
+  //   with back at slots {1, 3} (between the three front slots {0,
+  //   2, 4}). Same per-station width.
+  //
+  // The previous "frontSlot/2" stagger was the culprit: it added a
+  // full half-slot offset to the back row whose own slot was
+  // already frontSlot wide, so the last back-row center landed at
+  // sideMargin + frontSlot*(2.5 + 0.5) = w - sideMargin. The plaque
+  // (rendered at ±plaqueW/2 around the center) then extended past
+  // the right edge. New scheme: every station gets its own slot of
+  // width usableW/n; back vs front rows just claim alternating
+  // slots. No stagger, no edge-clamp band-aid needed.
   const sideMargin = w < 768 ? 8 : 16;
   const usableW = w - 2 * sideMargin;
-  const backHW = fitHouseW(usableW / backCount);
-  const frontHW = fitHouseW(usableW / frontCount);
+  const slotCount = n;
+  const slotW = usableW / slotCount;
+  // Per-row house body widths. Body must fit inside the slot with a
+  // small gutter so neighbour silhouettes don't kiss AND the
+  // outermost slot's body can't extend past the canvas edge. The
+  // body silhouette occupies (houseW * 0.78 + 32) * scale post-
+  // transform — see houseBox() in layout.test.ts. We back-solve for
+  // a houseW that keeps that silhouette inside slotW * 0.92 (8% of
+  // slot held back as gutter against neighbours and edges).
+  const fitSlotHW = (slot: number, sc: number): number => {
+    // (hw * 0.78 + 32) * sc <= slot * 0.92  →  hw <= (slot*0.92/sc - 32) / 0.78
+    const hwCap = (slot * 0.92 / Math.max(0.001, sc) - 32) / 0.78;
+    // Floor of 70 — at 375 mobile × 6p the slot is ~60 px, sc is
+    // 0.66, and the cap math yields ~65. Anything below 70 starts
+    // to read as a tiny dollhouse rather than a station, but a
+    // 6p mobile room is the worst case and an 80-px body there is
+    // an honest tradeoff against truncation.
+    return Math.min(baseHouseW, Math.max(70, Math.min(hwCap, slot * 0.78)));
+  };
+  const backHW = fitSlotHW(slotW, backSc);
+  const frontHW = fitSlotHW(slotW, frontSc);
 
-  // §H1 — STAGGER back row vs front row in x, so back-row plaques and
-  // characters don't sit directly behind front-row stations (the
-  // iter-47 misfire: with 3 back + 3 front evenly spaced, every back
-  // x ≡ a front x, plaques stacked, and the eye perceived only 3
-  // houses). We inset the back row by half its slot width relative
-  // to the front row so the rows interleave horizontally — the back
-  // stations sit between the front stations.
-  const backSlot = usableW / backCount;
-  const frontSlot = usableW / frontCount;
-  // The interleave offset shifts the back row toward the center by
-  // `frontSlot/2` so a 3-back + 3-front 6p layout reads as B-F-B-F-B-F
-  // along x rather than three vertical pairs. For 5p (2 back + 3
-  // front) the back row already has fewer columns, so we don't shift
-  // — backCount=2 with frontCount=3 naturally falls between the
-  // front's 1st-2nd and 2nd-3rd gaps.
-  const stagger = backCount === frontCount ? frontSlot / 2 : 0;
+  // Slot indices. For n=6 → back claims {0,2,4}, front {1,3,5}. For
+  // n=5 → front claims {0,2,4}, back {1,3} (back inset between
+  // wider front pairs). This guarantees a B-F-B-F-... reading order
+  // left-to-right at every viewport.
+  const backSlots: number[] = [];
+  const frontSlots: number[] = [];
+  if (backCount === frontCount) {
+    // Even-count rows: back at even slots, front at odd slots.
+    for (let i = 0; i < n; i++) {
+      if (i % 2 === 0) backSlots.push(i);
+      else frontSlots.push(i);
+    }
+  } else {
+    // 5p: front (3) wider, back (2) inset between front pairs.
+    for (let i = 0; i < n; i++) {
+      if (i % 2 === 0) frontSlots.push(i);
+      else backSlots.push(i);
+    }
+  }
 
-  // Back row: evenly spaced, biased slightly toward center so the row
-  // reads as "behind" relative to the wider front row. The back row
-  // characters stand a bit deeper (smaller charY) than the front
-  // plate so their feet read as sitting in front of their own house
-  // but behind the front-row characters' shadows.
-  for (let i = 0; i < backCount; i++) {
-    const t = backCount === 1 ? 0.5 : i / (backCount - 1);
-    const x = sideMargin + stagger + backSlot * (i + 0.5);
-    // Clamp x inside the usable rect so the stagger doesn't push the
-    // last back-row station off the right edge.
-    const maxX = w - sideMargin - (backHW * 0.78 / 2 + 16) * backSc;
-    const minX = sideMargin + (backHW * 0.78 / 2 + 16) * backSc;
-    const cx = Math.max(minX, Math.min(maxX, x));
+  for (let bi = 0; bi < backCount; bi++) {
+    const slotIdx = backSlots[bi];
+    if (slotIdx === undefined) continue;
+    const cx = sideMargin + slotW * (slotIdx + 0.5);
+    const t = backCount === 1 ? 0.5 : bi / Math.max(1, backCount - 1);
     spots.push({
       houseX: cx,
       houseY: backRowY,
@@ -875,23 +933,26 @@ export function computeSpots(
       scale: backSc,
       facing: t < 0.5 ? 1 : -1,
       row: 0,
+      stationW: slotW,
     });
   }
 
-  // Front row: evenly spaced, full width.
-  for (let i = 0; i < frontCount; i++) {
-    const x = sideMargin + frontSlot * (i + 0.5);
-    const t = frontCount === 1 ? 0.5 : i / (frontCount - 1);
+  for (let fi = 0; fi < frontCount; fi++) {
+    const slotIdx = frontSlots[fi];
+    if (slotIdx === undefined) continue;
+    const cx = sideMargin + slotW * (slotIdx + 0.5);
+    const t = frontCount === 1 ? 0.5 : fi / Math.max(1, frontCount - 1);
     spots.push({
-      houseX: x,
+      houseX: cx,
       houseY: frontHouseY,
-      charX: x,
+      charX: cx,
       charY: frontRowY,
       houseW: frontHW,
       houseH: fitHouseH(frontHouseY, frontSc),
       scale: frontSc,
       facing: t < 0.5 ? 1 : -1,
       row: 1,
+      stationW: slotW,
     });
   }
   return spots;
