@@ -983,45 +983,81 @@ export function computeSpots(
     }
   }
 
+  // §H1 (S-439) — canvas-edge clamp for the OUTERMOST station(s) in
+  // each row. Even though slotBandX0 + slotW*(slotIdx+0.5) places
+  // every station inside the slot band, the plaque ribbon is centered
+  // on cx with canvas-space half-width = stationW*0.95/2; AND Pixi's
+  // TextStyle.padding=8 widens the rasterized text texture by ~8 px
+  // on each side beyond the ribbon. On 6p × 375 mobile the math
+  // *just barely* keeps the ribbon inside the canvas — but the
+  // bold-700 PingFang fallback rasterized texture overshoots the
+  // ribbon graphics rectangle and visibly clips against the canvas
+  // edge ('玩家19' → '玩' on slot 0; 'counter#2' → 'r#2' on slot 5
+  // per iter-60 verdict). Defense in depth: clamp every spot's cx so
+  // the plaque ribbon (with a generous +PLAQUE_TEXT_PAD allowance for
+  // Pixi rasterization texture overshoot) lies entirely inside the
+  // canvas. Slots whose cx is pushed inward have their stationW
+  // tightened by the same amount so adjacent plaques never overlap.
+  const PLAQUE_TEXT_PAD = 10; // Pixi rasterization texture pad allowance
+  const edgeMargin = 4; // §H1 acceptance: plaque.left ≥ 4, plaque.right ≤ w-4
+  const clampSlot = (cx: number, stW: number): { cx: number; stationW: number } => {
+    const plaqueHalf = (stW * 0.95) / 2 + PLAQUE_TEXT_PAD;
+    const minCx = edgeMargin + plaqueHalf;
+    const maxCx = w - edgeMargin - plaqueHalf;
+    if (cx < minCx) {
+      // Push inward; tighten stationW symmetrically by twice the push so
+      // the adjacent slot's right boundary doesn't get crowded.
+      const push = minCx - cx;
+      return { cx: minCx, stationW: Math.max(40, stW - 2 * push) };
+    }
+    if (cx > maxCx) {
+      const push = cx - maxCx;
+      return { cx: maxCx, stationW: Math.max(40, stW - 2 * push) };
+    }
+    return { cx, stationW: stW };
+  };
+
   for (let bi = 0; bi < backCount; bi++) {
     const slotIdx = backSlots[bi];
     if (slotIdx === undefined) continue;
-    const cx = slotBandX0 + slotW * (slotIdx + 0.5);
+    const rawCx = slotBandX0 + slotW * (slotIdx + 0.5);
+    const clamped = clampSlot(rawCx, slotW);
     // backCount is statically `2 | 3` (5p → 2, 6p → 3) so the singleton
     // case never fires here; just normalize bi against (backCount - 1).
     // S-430 fix: previous `backCount === 1` guard tripped TS2367 under
     // strict mode because the comparison is unreachable.
     const t = bi / (backCount - 1);
     spots.push({
-      houseX: cx,
+      houseX: clamped.cx,
       houseY: backRowY,
-      charX: cx,
+      charX: clamped.cx,
       charY: frontPlateY,
       houseW: backHW,
       houseH: fitHouseH(backRowY, backSc),
       scale: backSc,
       facing: t < 0.5 ? 1 : -1,
       row: 0,
-      stationW: slotW,
+      stationW: clamped.stationW,
     });
   }
 
   for (let fi = 0; fi < frontCount; fi++) {
     const slotIdx = frontSlots[fi];
     if (slotIdx === undefined) continue;
-    const cx = slotBandX0 + slotW * (slotIdx + 0.5);
+    const rawCx = slotBandX0 + slotW * (slotIdx + 0.5);
+    const clamped = clampSlot(rawCx, slotW);
     const t = frontCount === 1 ? 0.5 : fi / Math.max(1, frontCount - 1);
     spots.push({
-      houseX: cx,
+      houseX: clamped.cx,
       houseY: frontHouseY,
-      charX: cx,
+      charX: clamped.cx,
       charY: frontRowY,
       houseW: frontHW,
       houseH: fitHouseH(frontHouseY, frontSc),
       scale: frontSc,
       facing: t < 0.5 ? 1 : -1,
       row: 1,
-      stationW: slotW,
+      stationW: clamped.stationW,
     });
   }
   return spots;

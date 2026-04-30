@@ -131,6 +131,62 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
     }
   });
 
+  // §H1 (S-439) — canvas-edge clamp regression. Mounts a 6-player
+  // layout with the worst-case name set on BOTH supported viewport
+  // canvas sizes (mobile 375×355, desktop 776×616) and asserts every
+  // plaque's canvas bounds satisfy the live acceptance contract:
+  //
+  //   plaque.left ≥ 4 AND plaque.right ≤ canvas.width - 4
+  //
+  // The clamp implemented in computeSpots() pushes outermost slots
+  // inward when their cx would otherwise put plaque.left/right past
+  // the 4-px gutter (accounting for Pixi rasterization texture
+  // overshoot via PLAQUE_TEXT_PAD). Adjacent slots' stationW shrinks
+  // symmetrically so plaques never overlap. This test guards that
+  // contract for the 6-bot 'counter#2' worst case.
+  for (const vp of [
+    { w: 375, h: 355, tag: 'mobile-canvas-375x355' },
+    { w: 776, h: 616, tag: 'desktop-canvas-776x616' },
+  ] as const) {
+    test(`S-439 acceptance: 6p × ${vp.tag} plaques stay inside canvas±4 with live chrome`, () => {
+      const { left: chromeLeft, right: chromeRight } = computeChromeMargins(vp.w);
+      const { top: pTop, bottom: pBottom } = computePlayableRect(vp.w, vp.h);
+      const spots = computeSpots(6, vp.w, pTop, pBottom, chromeLeft, chromeRight);
+      expect(spots).toHaveLength(6);
+
+      for (let i = 0; i < spots.length; i++) {
+        const s = spots[i]!;
+        const name = WORST_NAMES[i] ?? `bot${i}`;
+        const localStationW = s.stationW / Math.max(0.001, s.scale);
+        const house = new House({
+          ownerId: `id-${i}`,
+          ownerName: name,
+          width: s.houseW,
+          height: s.houseH,
+          stationW: localStationW,
+        });
+        const plaqueCanvasW = house.getPlaqueWidth() * s.scale;
+        const plaqueLeft = s.houseX - plaqueCanvasW / 2;
+        const plaqueRight = s.houseX + plaqueCanvasW / 2;
+        // Live acceptance: plaque must satisfy left ≥ 4 AND right ≤ w-4.
+        expect(
+          plaqueLeft,
+          `${vp.tag} slot=${i} name=${name} plaqueLeft=${plaqueLeft.toFixed(2)} (must ≥ 4)`,
+        ).toBeGreaterThanOrEqual(4);
+        expect(
+          plaqueRight,
+          `${vp.tag} slot=${i} name=${name} plaqueRight=${plaqueRight.toFixed(2)} (must ≤ ${vp.w - 4})`,
+        ).toBeLessThanOrEqual(vp.w - 4);
+        // Pixi.Text.text must strictly === displayName (no truncation).
+        const textChild = house.plaque.children.find(
+          (c): c is { text: string } & object =>
+            typeof (c as { text?: unknown }).text === 'string',
+        ) as ({ text: string } & object) | undefined;
+        expect(textChild?.text, `${vp.tag} slot=${i} name=${name}`).toBe(name);
+      }
+    });
+  }
+
   test('every house plaque on 5p × 375 mobile fits inside its slot', () => {
     const w = 375;
     const h = 355;

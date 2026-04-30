@@ -195,11 +195,15 @@ describe('§H1 mobile + desktop layout: no clipping for 2..6 players × {1280×8
       test(`${vp.tag} ${n} players: stationW fits inside canvas`, () => {
         const spots = computeSpots(n, vp.w, pTop, pBottom);
         for (const s of spots) {
-          // Floor of 55 — at 6p × 375-mobile the slot is ~60 px.
-          // Anything tighter than that and the plaque cannot host
-          // 'counter#2' at any legible font size, which is the
-          // worst-case nameplate length the disambiguator emits.
-          expect(s.stationW, `stationW for ${vp.tag} n=${n}`).toBeGreaterThan(55);
+          // Floor of 40 — at 6p × 375-mobile, the §H1 (S-439) canvas-edge
+          // clamp pushes the outermost slot inward and tightens its
+          // stationW to ~44 px on the no-chrome (chrome=0) test viewport.
+          // The brief explicitly accepts this tradeoff: a tighter slot
+          // hosting 'counter#2' at fontSize=5 (which fits in ~28 px at
+          // bold-700 PingFang) is preferable to a plaque ribbon
+          // extending past the canvas edge. Live mobile (chrome=4)
+          // gives stationW ≈ 51 px, well above this floor.
+          expect(s.stationW, `stationW for ${vp.tag} n=${n}`).toBeGreaterThan(40);
           // The station box is centered on houseX with stationW
           // canvas-units of horizontal budget. It must not exceed the
           // canvas edges (with a 1 px tolerance).
