@@ -6,9 +6,9 @@
 // `--bots counter,random,iron,mirror` always produces one of each.
 
 import type { BotKind, BotStrategy } from './types.js';
-import { counterStrategy } from './counter.js';
+import { counterStrategy, _resetCounterParams } from './counter.js';
 import { ironStrategy, _resetIronFavorites } from './iron.js';
-import { mirrorStrategy } from './mirror.js';
+import { mirrorStrategy, _resetMirrorParams } from './mirror.js';
 import { randomStrategy } from './random.js';
 
 export type { BotContext, BotKind, BotStrategy, RoundHistoryEntry } from './types.js';
@@ -21,9 +21,9 @@ export {
   splitmix32,
   type Rng,
 } from './seedRng.js';
-export { counterStrategy } from './counter.js';
+export { counterStrategy, _resetCounterParams } from './counter.js';
 export { ironStrategy, _resetIronFavorites } from './iron.js';
-export { mirrorStrategy } from './mirror.js';
+export { mirrorStrategy, _resetMirrorParams } from './mirror.js';
 export { randomStrategy } from './random.js';
 
 /** All registered strategies, in the canonical round-robin order from §A3. */
@@ -72,5 +72,7 @@ export function pickStrategyForIndex(index: number): BotStrategy {
  * reproducible regardless of process state.
  */
 export function resetBotCaches(): void {
+  _resetCounterParams();
   _resetIronFavorites();
+  _resetMirrorParams();
 }
