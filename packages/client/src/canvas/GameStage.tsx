@@ -516,6 +516,17 @@ function layoutPlayers(refs: SceneRefs): void {
     if (!spot) continue;
     const house = refs.houses.get(id);
     const ch = refs.characters.get(id);
+    // §H1 z-order: stations are layered by row, NOT by raw y-position.
+    // A back-row character sits at a larger y than a back-row house but
+    // smaller y than a front-row house, so a y-keyed zIndex would paint
+    // back-row characters ON TOP of front-row houses (the iter-47 bug:
+    // back chars covered the front houses, hiding three of six houses
+    // behind them). Instead each spot carries an explicit `row` (0=back,
+    // 1=front) and we assign zIndex = row*1000 + (house|char offset),
+    // so the back row paints fully (house→char→ground noise) before
+    // the front row begins, and no character ever paints over a house
+    // from a later row.
+    const rowBase = spot.row * 1000;
     if (house) {
       // Re-size the house geometry so its native dimensions match the
       // spot's allotted box — critical on narrow viewports where the
@@ -523,7 +534,7 @@ function layoutPlayers(refs: SceneRefs): void {
       house.resize(spot.houseW, spot.houseH);
       house.view.position.set(spot.houseX, spot.houseY);
       house.view.scale.set(spot.scale, spot.scale);
-      house.view.zIndex = Math.floor(spot.houseY) * 2;
+      house.view.zIndex = rowBase;
     }
     if (ch) {
       // Snap home position only when the character is currently at a
@@ -547,9 +558,11 @@ function layoutPlayers(refs: SceneRefs): void {
       );
       ch.setHomeX(spot.charX);
       refs.homeX.set(id, spot.charX);
-      // §H1 z-order: character sits one notch above its own house's
-      // depth band so it paints in front of any house at smaller y.
-      ch.view.zIndex = Math.floor(spot.charY) * 2 + 1;
+      // Character sits one notch above its OWN house's row, so it
+      // paints in front of its house but still behind any house in a
+      // later row. Within a row we add 1 so the character paints over
+      // its own house's stoop.
+      ch.view.zIndex = rowBase + 1;
     }
   }
 }
@@ -568,6 +581,10 @@ export interface Spot {
   houseH: number;
   scale: number;
   facing: 1 | -1;
+  /** Row index (0 = back row, 1 = front row). Used by layoutPlayers
+   *  to assign a row-based zIndex that guarantees back-row characters
+   *  paint behind front-row houses (FINAL_GOAL §H1). */
+  row: 0 | 1;
 }
 
 /** Compute station spots within an explicit playable rect. The rect
@@ -645,6 +662,7 @@ export function computeSpots(
       houseH: fitHouseH(houseRowY, sc),
       scale: sc,
       facing: 1,
+      row: 1,
     });
     return spots;
   }
@@ -662,6 +680,7 @@ export function computeSpots(
       houseH: hh,
       scale: sc,
       facing: 1,
+      row: 1,
     });
     spots.push({
       houseX: w * 0.72,
@@ -672,6 +691,7 @@ export function computeSpots(
       houseH: hh,
       scale: sc,
       facing: -1,
+      row: 1,
     });
     return spots;
   }
@@ -692,6 +712,7 @@ export function computeSpots(
       houseH: fitHouseH(apexRowY, backSc),
       scale: backSc,
       facing: 1,
+      row: 0,
     });
     spots.push({
       houseX: w * 0.22,
@@ -702,6 +723,7 @@ export function computeSpots(
       houseH: fitHouseH(baseRowY, frontSc),
       scale: frontSc,
       facing: 1,
+      row: 1,
     });
     spots.push({
       houseX: w * 0.78,
@@ -712,6 +734,7 @@ export function computeSpots(
       houseH: fitHouseH(baseRowY, frontSc),
       scale: frontSc,
       facing: -1,
+      row: 1,
     });
     return spots;
   }
@@ -741,6 +764,7 @@ export function computeSpots(
       houseH: fitHouseH(backRowY, backSc),
       scale: backSc,
       facing: 1,
+      row: 0,
     });
     spots.push({
       houseX: w * 0.72,
@@ -751,6 +775,7 @@ export function computeSpots(
       houseH: fitHouseH(backRowY, backSc),
       scale: backSc,
       facing: -1,
+      row: 0,
     });
     spots.push({
       houseX: w * 0.18,
@@ -761,6 +786,7 @@ export function computeSpots(
       houseH: fitHouseH(frontHouseY, frontSc),
       scale: frontSc,
       facing: 1,
+      row: 1,
     });
     spots.push({
       houseX: w * 0.82,
@@ -771,6 +797,7 @@ export function computeSpots(
       houseH: fitHouseH(frontHouseY, frontSc),
       scale: frontSc,
       facing: -1,
+      row: 1,
     });
     return spots;
   }
@@ -808,26 +835,52 @@ export function computeSpots(
   const backHW = fitHouseW(usableW / backCount);
   const frontHW = fitHouseW(usableW / frontCount);
 
+  // §H1 — STAGGER back row vs front row in x, so back-row plaques and
+  // characters don't sit directly behind front-row stations (the
+  // iter-47 misfire: with 3 back + 3 front evenly spaced, every back
+  // x ≡ a front x, plaques stacked, and the eye perceived only 3
+  // houses). We inset the back row by half its slot width relative
+  // to the front row so the rows interleave horizontally — the back
+  // stations sit between the front stations.
+  const backSlot = usableW / backCount;
+  const frontSlot = usableW / frontCount;
+  // The interleave offset shifts the back row toward the center by
+  // `frontSlot/2` so a 3-back + 3-front 6p layout reads as B-F-B-F-B-F
+  // along x rather than three vertical pairs. For 5p (2 back + 3
+  // front) the back row already has fewer columns, so we don't shift
+  // — backCount=2 with frontCount=3 naturally falls between the
+  // front's 1st-2nd and 2nd-3rd gaps.
+  const stagger = backCount === frontCount ? frontSlot / 2 : 0;
+
   // Back row: evenly spaced, biased slightly toward center so the row
-  // reads as "behind" relative to the wider front row.
+  // reads as "behind" relative to the wider front row. The back row
+  // characters stand a bit deeper (smaller charY) than the front
+  // plate so their feet read as sitting in front of their own house
+  // but behind the front-row characters' shadows.
   for (let i = 0; i < backCount; i++) {
     const t = backCount === 1 ? 0.5 : i / (backCount - 1);
-    const x = sideMargin + (usableW / backCount) * (i + 0.5);
+    const x = sideMargin + stagger + backSlot * (i + 0.5);
+    // Clamp x inside the usable rect so the stagger doesn't push the
+    // last back-row station off the right edge.
+    const maxX = w - sideMargin - (backHW * 0.78 / 2 + 16) * backSc;
+    const minX = sideMargin + (backHW * 0.78 / 2 + 16) * backSc;
+    const cx = Math.max(minX, Math.min(maxX, x));
     spots.push({
-      houseX: x,
+      houseX: cx,
       houseY: backRowY,
-      charX: x,
+      charX: cx,
       charY: frontPlateY,
       houseW: backHW,
       houseH: fitHouseH(backRowY, backSc),
       scale: backSc,
       facing: t < 0.5 ? 1 : -1,
+      row: 0,
     });
   }
 
   // Front row: evenly spaced, full width.
   for (let i = 0; i < frontCount; i++) {
-    const x = sideMargin + (usableW / frontCount) * (i + 0.5);
+    const x = sideMargin + frontSlot * (i + 0.5);
     const t = frontCount === 1 ? 0.5 : i / (frontCount - 1);
     spots.push({
       houseX: x,
@@ -838,6 +891,7 @@ export function computeSpots(
       houseH: fitHouseH(frontHouseY, frontSc),
       scale: frontSc,
       facing: t < 0.5 ? 1 : -1,
+      row: 1,
     });
   }
   return spots;

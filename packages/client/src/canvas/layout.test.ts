@@ -119,6 +119,26 @@ describe('§H1 mobile + desktop layout: no clipping for 2..6 players × {1280×8
           expect(s.scale, `scale for ${vp.tag} n=${n}`).toBeGreaterThan(0.45);
           expect(s.houseW).toBeGreaterThan(80);
           expect(s.houseH).toBeGreaterThan(90);
+          // §H1 row tag is required for layoutPlayers' z-order — without
+          // it the back-row characters paint over front-row houses.
+          expect(s.row === 0 || s.row === 1, `row tag for ${vp.tag} n=${n}`).toBe(true);
+        }
+      });
+
+      // §H1 — back-row stations (row=0) must sit at a smaller (shallower)
+      // y than front-row stations (row=1) so the z-order layering reads
+      // as "behind"→"in front of" left-to-right on screen.
+      test(`${vp.tag} ${n} players: row tag matches y-depth ordering`, () => {
+        const spots = computeSpots(n, vp.w, pTop, pBottom);
+        const back = spots.filter((s) => s.row === 0);
+        const front = spots.filter((s) => s.row === 1);
+        if (back.length > 0 && front.length > 0) {
+          const maxBackY = Math.max(...back.map((s) => s.houseY));
+          const minFrontY = Math.min(...front.map((s) => s.houseY));
+          expect(
+            maxBackY,
+            `${vp.tag} n=${n} back row should sit above front row in y`,
+          ).toBeLessThan(minFrontY);
         }
       });
 

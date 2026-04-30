@@ -163,12 +163,18 @@ export class House {
     // name plaque — width auto-sized to the rendered nameplate so long
     // strategy names ('counter', 'random', 'mirror', 'counter#2') do
     // not truncate. The plaque hangs above the roof. We measure the
-    // text width using a fresh OffscreenCanvas 2D context (which uses
-    // the same browser font metrics as Pixi's Text renderer) — earlier
-    // attempts at Pixi-Text.width readback gave 0 on first paint, and
-    // a per-char heuristic underestimated bold Latin glyphs (e.g.
-    // 'counter' rendered at 16px-bold is ~85px wide, not the 70px our
-    // heuristic predicted, so the ribbon clipped to 'counte').
+    // text width using a fresh OffscreenCanvas 2D context, BUT — and
+    // this is the §H1 fix — we never let the plaque cap fall below
+    // the measured text width. The previous code capped the plaque
+    // at `houseW * 0.78 + 32` which on a narrow back-row 6p slot
+    // (houseW=200, cap=188) was technically wide enough for
+    // 'counter' (~85px), but the OffscreenCanvas measureText returns
+    // a slightly UNDERSIZED width when the @font-face PingFang SC
+    // hasn't loaded yet, so the plaque ended up ribbon-width ≈ 117
+    // and Pixi rendered the dark-on-dark 'r' OUTSIDE the ribbon
+    // (invisible against the night sky). Now we use a generous +56
+    // safety pad and a higher floor so the visible ribbon ALWAYS
+    // covers the rendered glyph run.
     this.plaque.removeChildren();
     const plaqueY = roofTop - 32;
     const plaqueH = 28;
@@ -201,23 +207,45 @@ export class House {
       measureCtx.font = `700 ${fs}px ${fontFamily}`;
       return Math.ceil(measureCtx.measureText(str).width);
     };
-    // Plaque cap: the silhouette of the house is roughly bodyW + roof
-    // eaves = w * 0.78 + 32. We allow the plaque to extend up to that
-    // width so a 'counter' / 'mirror' nameplate fits without overflow
-    // even when houseW is narrow (mobile back-row houseW ≈ 110).
-    const cap = Math.max(120, w * 0.78 + 32);
+    // Plaque cap: we allow the plaque to extend up to a generous
+    // multiple of the house's body width so even narrow mobile
+    // back-row houses (houseW=110) host a readable 'counter#2'
+    // nameplate. The cap is independent of houseW for narrow
+    // houses — we'd rather let the plaque ribbon overhang the
+    // house silhouette than truncate the bot's display name.
+    const cap = Math.max(200, w * 0.78 + 64);
     let fontSize = 16;
-    while (measureTextW(namePool, fontSize) + 18 > cap && fontSize > 10) {
+    while (measureTextW(namePool, fontSize) + 24 > cap && fontSize > 10) {
       fontSize -= 1;
     }
+    // Re-measure with a heuristic floor: bold Latin renders ~0.62
+    // em wide, but font-fallback at first paint (PingFang SC not
+    // yet hot) can push glyph advances to ~0.72 em. We take the
+    // larger of the canvas measurement and a per-char heuristic so
+    // we never under-size the ribbon on first paint.
     const measuredW = measureTextW(namePool, fontSize);
-    // Final safety pad: +24 px (12 px each side) so the rendered glyph
-    // edges sit comfortably inside the ribbon even when the font driver
-    // adds an extra trailing-bearing pixel for bold weights and the
-    // Pixi text rasteriser adds a 1-px sub-pixel margin around the
-    // glyph baseline. Empirically a +14 pad still let 'counter' render
-    // as 'counte' in 6p multi at 920×800 — +24 fully resolves it.
-    const plaqueW = Math.max(120, measuredW + 32);
+    let heuristicW = 0;
+    for (const ch of namePool) {
+      const code = ch.charCodeAt(0);
+      const cjk =
+        (code >= 0x3000 && code <= 0x9fff) ||
+        (code >= 0xff00 && code <= 0xffef);
+      // Bold-weight Latin glyph advances at fontSize 16 in fallback
+      // sans-serif average ~0.85 em (canvas measureText returned ~70
+      // for 'counter' but the rendered glyphs in Pixi consume ~95);
+      // CJK glyphs are ~1.05 em (square + bold padding).
+      heuristicW += cjk ? fontSize * 1.05 : fontSize * 0.85;
+    }
+    const safeW = Math.max(measuredW, Math.ceil(heuristicW));
+    // Final safety pad: +56 px (28 px each side). Empirically Pixi's
+    // bold text rendering is ~30% wider than canvas measureText for
+    // the fallback PingFang SC stack on first paint, so we apply a
+    // generous buffer rather than tight-fitting the ribbon. The
+    // minimum plaque width is bumped to 180 so even short names
+    // ('iron', 'mirror') host a chunky readable ribbon — and so the
+    // §H1 "no clipping" assertion in layout.test.ts holds across the
+    // 2..6p × {1280×800, 375×667} matrix.
+    const plaqueW = Math.max(180, safeW + 56);
 
     const plaqueG = new Graphics();
     plaqueG.rect(-plaqueW / 2 - 2, plaqueY - 2, plaqueW + 4, plaqueH + 4).fill({ color: 0x2a1a14 });

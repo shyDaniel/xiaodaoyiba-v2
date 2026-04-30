@@ -188,9 +188,10 @@ export class Room {
     const botIndex = this.members.filter((m) => m.isBot).length;
     const strategy = pickStrategyForIndex(botIndex);
     const id = `bot-${this.members.length}-${strategy.kind}`;
+    const nickname = this.dedupeBotNickname(strategy.kind);
     const member: RoomMember = {
       id,
-      nickname: strategy.kind,
+      nickname,
       isBot: true,
       socketId: undefined,
       bot: {
@@ -205,15 +206,31 @@ export class Room {
     return id;
   }
 
+  /** §H1 dedupe — when 5+ bots are added we exhaust the 4-strategy
+   *  registry and `pickStrategyForIndex(4)` returns the same kind as
+   *  index 0, producing two bots with nickname 'counter'. To keep
+   *  nameplates and roster lists disambiguated we suffix `#N` for the
+   *  Nth duplicate (counter, counter#2, counter#3, …). */
+  private dedupeBotNickname(baseKind: string): string {
+    const used = new Set(this.members.map((m) => m.nickname));
+    if (!used.has(baseKind)) return baseKind;
+    for (let n = 2; n < 100; n++) {
+      const candidate = `${baseKind}#${n}`;
+      if (!used.has(candidate)) return candidate;
+    }
+    return baseKind;
+  }
+
   /** Force a specific bot kind (admin / test path). */
   addBotOfKind(kind: BotKind): string | null {
     if (this.phase !== 'LOBBY') return null;
     if (this.members.length >= MAX_PLAYERS) return null;
     const strategy = getBotStrategy(kind);
     const id = `bot-${this.members.length}-${kind}`;
+    const nickname = this.dedupeBotNickname(kind);
     const member: RoomMember = {
       id,
-      nickname: kind,
+      nickname,
       isBot: true,
       socketId: undefined,
       bot: { kind, strategy, rng: seededRng(this.seed, this.roomId, id) },
