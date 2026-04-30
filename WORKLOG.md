@@ -1333,3 +1333,50 @@ for every seed in [0, 50).
   - Win shares: bot-2-random 28.7%, bot-3-iron 28.1%,
     bot-1-counter 26.1%, p0 17.1% — all comfortably under the 60%
     cap mandated by §A2.
+
+---
+
+## Iteration 31 — mobile responsive shell (S-342)
+
+**What:** Closed the catastrophic 375×667 mobile layout regression from
+iter-29/30. `packages/client/src/components/BattleLog.tsx` now exports a
+`useIsMobile()` hook (768px breakpoint, resize-aware) and dispatches
+between the existing right-rail desktop variant and a new
+`BattleLogMobile` bottom-sheet — collapsed by default with a floating
+toggle that previews the latest narration line + an unread-count badge
+that pulses gold when new entries arrive while the sheet is closed.
+Tap the toggle (or any prior entry) to slide a max-60vh sheet up from
+the bottom; tap the backdrop or the ▾ chevron to collapse. Both
+`Game.tsx` and `MultiGame.tsx` now compute a `railOffset` from
+`useIsMobile`: `min(30vw, 360px)` on desktop, `0px` on mobile, applied
+symmetrically to the canvas host, header, and footer so all three
+expand to full viewport width on phones. The header collapses to a
+single line on mobile (knife + 小刀一把 + R/phase pill + 大厅 + mute,
+each marked `whiteSpace: nowrap` and `flexShrink: 0` so 出拳 no longer
+wraps character-by-character at 60px); the subtitle "来到你家 · 扒你
+裤衩 · 直接咔嚓" / room code is dropped at <768px to free horizontal
+space. The vertical player chip column rotates to a horizontal
+scrolling row pinned just under the header so it doesn't cover the
+canvas action.
+
+**Observed (Playwright MCP, dev server):**
+- 375×667 R2·出拳 with 1 pull_pants in history: header on a single
+  line, all 3 HandPicker buttons (石头/布/剪刀) fully visible and
+  tappable with no clipping, both characters + houses visible in the
+  full-width canvas, BattleLog toggle reads "战报 R1.pull_pants ·
+  小明一个箭步上前, …" with unread badge "1" pulsing gold above the
+  picker. (`./mobile-375-action.png`)
+- Tapping the toggle opens the bottom-sheet at ≤60vh showing
+  "你一个箭步上前, 扒下了小刚的裤衩" + "小明一个箭步上前, 扒下了
+  小芳的裤衩" with color-coded actor names (你 cyan, 小刚
+  yellow-orange, 小明 green, 小芳 yellow-green) and 扒 verb badges
+  fully readable without horizontal scroll. (`./mobile-375-log-expanded.png`)
+- 414×896 (iPhone Plus): same layout, more vertical room, sheet looks
+  even more comfortable. (`./mobile-414-action.png`)
+- 360×800 (Android baseline): single-line header, 3 hand buttons
+  visible, chip strip horizontally scrollable. (`./mobile-360-action.png`)
+- 1280×800 desktop unchanged: subtitle visible, vertical chip column,
+  right-rail BattleLog with 2 entries fully visible. No regression.
+  (`./desktop-1280-action.png`)
+- pnpm test: 118/118 green. pnpm build: 235KB gzipped client (well
+  under §E3's 300KB cap).

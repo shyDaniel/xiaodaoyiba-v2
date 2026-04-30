@@ -1,8 +1,16 @@
 // BattleLog — fixed right rail showing per-round narration. Each entry
 // has timestamp prefix `R{N}.{phase}`, color-coded action badges, fade-in
 // + 800ms yellow glow on new entries. Scrollable history.
+//
+// Responsive shell (S-342): on viewports < 768px the right rail is
+// replaced by a bottom-sheet that defaults to collapsed. A floating
+// toggle button anchored above the HandPicker lets the user expand the
+// sheet to read narration, then collapse it again to free up the
+// canvas. This restores the missing 200+px of canvas width on mobile so
+// all 4 characters + the houses fit, and the HandPicker buttons are no
+// longer clipped behind the rail.
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { toCss, palette, playerColor } from '../palette.js';
 
 export type LogVerb = '扒' | '砍' | '闪' | '平' | '死' | '胜';
@@ -30,9 +38,39 @@ const VERB_COLOR: Record<LogVerb, number> = {
 
 export interface BattleLogProps {
   entries: LogEntry[];
+  /**
+   * Force layout mode. Defaults to 'auto' which switches to the mobile
+   * bottom-sheet at viewport widths < 768px and the desktop right-rail
+   * otherwise.
+   */
+  mode?: 'auto' | 'desktop' | 'mobile';
+  /**
+   * Bottom inset (in px) reserved for the parent footer / HandPicker.
+   * The mobile toggle button is anchored this many pixels above the
+   * viewport's bottom edge so it never overlaps the action bar.
+   * Defaults to 132 (HandPicker height + safe-area).
+   */
+  mobileBottomOffset?: number;
 }
 
-export function BattleLog({ entries }: BattleLogProps): JSX.Element {
+export function BattleLog({
+  entries,
+  mode = 'auto',
+  mobileBottomOffset = 132,
+}: BattleLogProps): JSX.Element {
+  const isMobile = useIsMobile(mode);
+  if (isMobile) {
+    return (
+      <BattleLogMobile
+        entries={entries}
+        mobileBottomOffset={mobileBottomOffset}
+      />
+    );
+  }
+  return <BattleLogDesktop entries={entries} />;
+}
+
+function BattleLogDesktop({ entries }: { entries: LogEntry[] }): JSX.Element {
   const listRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -64,62 +102,308 @@ export function BattleLog({ entries }: BattleLogProps): JSX.Element {
         zIndex: 10,
       }}
     >
-      <header
-        style={{
-          padding: '0.7rem 0.9rem',
-          borderBottom: '1px solid rgba(247,215,116,0.25)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          fontFamily: 'ui-sans-serif, "PingFang SC", "Microsoft YaHei", sans-serif',
-        }}
-      >
-        <span
+      <LogHeader />
+      <LogList listRef={listRef} entries={entries} />
+    </aside>
+  );
+}
+
+function BattleLogMobile({
+  entries,
+  mobileBottomOffset,
+}: {
+  entries: LogEntry[];
+  mobileBottomOffset: number;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  // Last-seen entry id used to drive a "new message" pulse on the
+  // collapsed toggle button so the user notices narration arriving while
+  // the sheet is closed.
+  const [unread, setUnread] = useState(0);
+  const lastIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const last = entries[entries.length - 1];
+    if (!last) return;
+    if (lastIdRef.current === last.id) return;
+    lastIdRef.current = last.id;
+    if (open) {
+      setUnread(0);
+      const el = listRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    } else {
+      setUnread((n) => n + 1);
+    }
+  }, [entries, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    setUnread(0);
+    const el = listRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [open]);
+
+  const lastEntry = entries[entries.length - 1];
+
+  return (
+    <>
+      {/* Floating toggle / mini-preview — visible whenever the sheet is
+          collapsed. Sits above the HandPicker via the bottom offset. */}
+      {!open ? (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          aria-label="展开战报"
           style={{
-            color: toCss(palette.uiGold),
-            fontWeight: 800,
-            letterSpacing: '0.18em',
-            fontSize: '0.95rem',
+            position: 'fixed',
+            left: 12,
+            right: 12,
+            bottom: mobileBottomOffset,
+            zIndex: 11,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            padding: '8px 12px',
+            borderRadius: 12,
+            background: 'rgba(11,13,18,0.92)',
+            border: '2px solid rgba(247,215,116,0.55)',
+            boxShadow:
+              unread > 0
+                ? '0 0 18px rgba(247,215,116,0.55), 0 4px 10px rgba(0,0,0,0.6)'
+                : '0 4px 10px rgba(0,0,0,0.55)',
+            color: '#f4ecd8',
+            fontFamily:
+              'ui-sans-serif, "PingFang SC", "Microsoft YaHei", sans-serif',
+            fontSize: '0.82rem',
+            cursor: 'pointer',
+            textAlign: 'left',
+            animation:
+              unread > 0
+                ? 'xdyb-pulse-gold 1200ms ease-in-out infinite'
+                : undefined,
           }}
         >
-          战 · 报
-        </span>
-        <span style={{ fontSize: '0.75rem', color: '#8a8d99' }}>
-          BattleLog
-        </span>
-      </header>
-      <div
-        ref={listRef}
-        style={{
-          flex: 1,
-          overflowY: 'auto',
-          padding: '0.6rem 0.7rem',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '0.5rem',
-          color: toCss(palette.uiPaper),
-          fontFamily: 'ui-sans-serif, "PingFang SC", "Microsoft YaHei", sans-serif',
-          fontSize: '0.92rem',
-          lineHeight: 1.4,
-        }}
-      >
-        {entries.length === 0 ? (
-          <div
+          <span
             style={{
-              color: '#8a8d99',
-              fontStyle: 'italic',
-              fontSize: '0.85rem',
-              padding: '0.4rem 0',
+              flex: '0 0 auto',
+              color: toCss(palette.uiGold),
+              fontWeight: 800,
+              letterSpacing: '0.18em',
+              fontSize: '0.78rem',
             }}
           >
-            等待第一回合... 出拳！
-          </div>
-        ) : null}
-        {entries.map((entry) => (
-          <LogRow key={entry.id} entry={entry} />
-        ))}
-      </div>
-    </aside>
+            战报
+          </span>
+          <span
+            style={{
+              flex: 1,
+              minWidth: 0,
+              overflow: 'hidden',
+              whiteSpace: 'nowrap',
+              textOverflow: 'ellipsis',
+              opacity: lastEntry ? 1 : 0.55,
+            }}
+          >
+            {lastEntry
+              ? `R${lastEntry.round}.${lastEntry.phase} · ${lastEntry.text}`
+              : '等待第一回合…'}
+          </span>
+          {unread > 0 ? (
+            <span
+              style={{
+                flex: '0 0 auto',
+                background: toCss(palette.uiGold),
+                color: '#1a1208',
+                borderRadius: 999,
+                padding: '1px 7px',
+                fontWeight: 800,
+                fontSize: '0.7rem',
+              }}
+            >
+              {unread > 9 ? '9+' : unread}
+            </span>
+          ) : null}
+          <span
+            aria-hidden="true"
+            style={{
+              flex: '0 0 auto',
+              color: toCss(palette.uiGold),
+              fontWeight: 800,
+              fontSize: '0.9rem',
+            }}
+          >
+            ▴
+          </span>
+        </button>
+      ) : null}
+
+      {open ? (
+        <>
+          {/* Backdrop — tapping outside collapses the sheet. */}
+          <div
+            onClick={() => setOpen(false)}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0,0,0,0.5)',
+              zIndex: 12,
+            }}
+            aria-hidden="true"
+          />
+          <aside
+            role="dialog"
+            aria-label="战报"
+            style={{
+              position: 'fixed',
+              left: 0,
+              right: 0,
+              bottom: 0,
+              maxHeight: '60vh',
+              minHeight: 220,
+              background: 'rgba(11,13,18,0.98)',
+              borderTopLeftRadius: 16,
+              borderTopRightRadius: 16,
+              borderTop: '2px solid rgba(247,215,116,0.55)',
+              boxShadow: '0 -8px 24px rgba(0,0,0,0.7)',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+              zIndex: 13,
+              animation: 'xdyb-sheet-up 220ms ease-out',
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              aria-label="收起战报"
+              style={{
+                appearance: 'none',
+                background: 'transparent',
+                border: 'none',
+                padding: '0.7rem 0.9rem 0.4rem',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                cursor: 'pointer',
+                color: '#f4ecd8',
+                fontFamily:
+                  'ui-sans-serif, "PingFang SC", "Microsoft YaHei", sans-serif',
+              }}
+            >
+              <span
+                style={{
+                  color: toCss(palette.uiGold),
+                  fontWeight: 800,
+                  letterSpacing: '0.18em',
+                  fontSize: '0.95rem',
+                }}
+              >
+                战 · 报
+              </span>
+              <span
+                aria-hidden="true"
+                style={{
+                  color: toCss(palette.uiGold),
+                  fontWeight: 800,
+                  fontSize: '1rem',
+                }}
+              >
+                ▾
+              </span>
+            </button>
+            {/* Drag-handle hint */}
+            <div
+              aria-hidden="true"
+              style={{
+                width: 44,
+                height: 4,
+                background: 'rgba(247,215,116,0.45)',
+                borderRadius: 999,
+                margin: '0 auto 6px',
+              }}
+            />
+            <LogList listRef={listRef} entries={entries} />
+          </aside>
+        </>
+      ) : null}
+
+      <style>{`
+        @keyframes xdyb-sheet-up {
+          from { transform: translateY(100%); }
+          to { transform: translateY(0); }
+        }
+      `}</style>
+    </>
+  );
+}
+
+function LogHeader(): JSX.Element {
+  return (
+    <header
+      style={{
+        padding: '0.7rem 0.9rem',
+        borderBottom: '1px solid rgba(247,215,116,0.25)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        fontFamily: 'ui-sans-serif, "PingFang SC", "Microsoft YaHei", sans-serif',
+      }}
+    >
+      <span
+        style={{
+          color: toCss(palette.uiGold),
+          fontWeight: 800,
+          letterSpacing: '0.18em',
+          fontSize: '0.95rem',
+        }}
+      >
+        战 · 报
+      </span>
+      <span style={{ fontSize: '0.75rem', color: '#8a8d99' }}>BattleLog</span>
+    </header>
+  );
+}
+
+function LogList({
+  listRef,
+  entries,
+}: {
+  listRef: React.MutableRefObject<HTMLDivElement | null>;
+  entries: LogEntry[];
+}): JSX.Element {
+  return (
+    <div
+      ref={listRef}
+      style={{
+        flex: 1,
+        overflowY: 'auto',
+        padding: '0.6rem 0.7rem',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '0.5rem',
+        color: toCss(palette.uiPaper),
+        fontFamily: 'ui-sans-serif, "PingFang SC", "Microsoft YaHei", sans-serif',
+        fontSize: '0.92rem',
+        lineHeight: 1.4,
+      }}
+    >
+      {entries.length === 0 ? (
+        <div
+          style={{
+            color: '#8a8d99',
+            fontStyle: 'italic',
+            fontSize: '0.85rem',
+            padding: '0.4rem 0',
+          }}
+        >
+          等待第一回合... 出拳！
+        </div>
+      ) : null}
+      {entries.map((entry) => (
+        <LogRow key={entry.id} entry={entry} />
+      ))}
+    </div>
   );
 }
 
@@ -226,4 +510,30 @@ function colorizeActors(text: string, actors: string[]): JSX.Element[] {
   }
   if (remaining.length > 0) out.push(<span key={key++}>{remaining}</span>);
   return out;
+}
+
+/**
+ * Returns true on viewports the layout treats as "mobile" (<768px wide).
+ * Listens to window resize events so rotating a phone or resizing the
+ * desktop window swaps layouts live without reload.
+ */
+export function useIsMobile(mode: 'auto' | 'desktop' | 'mobile' = 'auto'): boolean {
+  const [isMobile, setIsMobile] = useState(() => {
+    if (mode !== 'auto') return mode === 'mobile';
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth < 768;
+  });
+  useEffect(() => {
+    if (mode !== 'auto') {
+      setIsMobile(mode === 'mobile');
+      return;
+    }
+    const onResize = (): void => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    window.addEventListener('resize', onResize);
+    onResize();
+    return () => window.removeEventListener('resize', onResize);
+  }, [mode]);
+  return isMobile;
 }

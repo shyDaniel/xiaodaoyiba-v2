@@ -19,7 +19,12 @@ import {
   type StagePlayer,
 } from '../canvas/GameStage.js';
 import { HandPicker } from '../components/HandPicker.js';
-import { BattleLog, type LogEntry, type LogVerb } from '../components/BattleLog.js';
+import {
+  BattleLog,
+  type LogEntry,
+  type LogVerb,
+  useIsMobile,
+} from '../components/BattleLog.js';
 import { palette, toCss, playerColor } from '../palette.js';
 import {
   isMuted as audioIsMuted,
@@ -304,6 +309,12 @@ export function GamePage({ onExit }: { onExit?: () => void } = {}): JSX.Element 
   const phaseInfo = PHASE_INFOS[phase];
   const selfState = playerStates.find((p) => p.id === SELF_ID);
   const isSelfDead = selfState?.stage === 'DEAD';
+  const isMobile = useIsMobile();
+  // On desktop the BattleLog occupies up to min(30vw, 360px) on the
+  // right; the canvas / header / footer must stop short of it. On
+  // mobile the BattleLog is a bottom sheet (default collapsed) so the
+  // canvas spans the full width.
+  const railOffset = isMobile ? '0px' : 'min(30vw, 360px)';
 
   return (
     <div
@@ -334,54 +345,67 @@ export function GamePage({ onExit }: { onExit?: () => void } = {}): JSX.Element 
           top: 0,
           left: 0,
           bottom: 0,
-          right: 'min(30vw, 360px)',
+          right: railOffset,
         }}
       >
         <GameStage players={stagePlayers} controllerRef={stageRef} />
       </div>
 
       {/* Top header — title + round/phase. Confined to the canvas column so
-          it doesn't slide under the BattleLog right rail. */}
+          it doesn't slide under the BattleLog right rail. On mobile the
+          subtitle is dropped, the title shrinks, and the phase pill fits
+          on the same row. */}
       <header
         style={{
           position: 'absolute',
           top: 0,
           left: 0,
-          right: 'min(30vw, 360px)',
-          padding: '14px 20px',
+          right: railOffset,
+          padding: isMobile ? '10px 12px 8px' : '14px 20px',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
+          gap: 8,
           zIndex: 5,
           pointerEvents: 'none',
           background:
             'linear-gradient(180deg, rgba(11,13,18,0.85) 0%, rgba(11,13,18,0.0) 100%)',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: isMobile ? 8 : 14,
+            minWidth: 0,
+          }}
+        >
           <Knife />
           <h1
             style={{
               margin: 0,
-              fontSize: 'clamp(1.4rem, 2.6vw, 2.2rem)',
+              fontSize: isMobile ? '1.05rem' : 'clamp(1.4rem, 2.6vw, 2.2rem)',
               color: toCss(palette.uiGold),
-              letterSpacing: '0.18em',
+              letterSpacing: isMobile ? '0.08em' : '0.18em',
               textShadow:
                 '0 3px 0 #6a4012, 0 0 18px rgba(247,215,116,0.45)',
               fontWeight: 800,
+              whiteSpace: 'nowrap',
             }}
           >
             小刀一把
           </h1>
-          <span
-            style={{
-              color: '#cfb978',
-              fontSize: '0.85rem',
-              letterSpacing: '0.18em',
-            }}
-          >
-            来到你家 · 扒你裤衩 · 直接咔嚓
-          </span>
+          {!isMobile ? (
+            <span
+              style={{
+                color: '#cfb978',
+                fontSize: '0.85rem',
+                letterSpacing: '0.18em',
+              }}
+            >
+              来到你家 · 扒你裤衩 · 直接咔嚓
+            </span>
+          ) : null}
         </div>
 
         <div
@@ -407,6 +431,8 @@ export function GamePage({ onExit }: { onExit?: () => void } = {}): JSX.Element 
                 fontSize: '0.8rem',
                 cursor: 'pointer',
                 letterSpacing: '0.1em',
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
               }}
             >
               ← 大厅
@@ -425,17 +451,36 @@ export function GamePage({ onExit }: { onExit?: () => void } = {}): JSX.Element 
         </div>
       </header>
 
-      {/* Player roster strip — top-left under header */}
+      {/* Player roster strip — vertical column on desktop (top-left under
+          header). On mobile a horizontal scrolling row pinned just below
+          the collapsed header so it doesn't overlap the canvas action. */}
       <div
-        style={{
-          position: 'absolute',
-          top: 76,
-          left: 16,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 6,
-          zIndex: 5,
-        }}
+        style={
+          isMobile
+            ? {
+                position: 'absolute',
+                top: 52,
+                left: 0,
+                right: 0,
+                display: 'flex',
+                flexDirection: 'row',
+                gap: 6,
+                padding: '0 8px',
+                overflowX: 'auto',
+                whiteSpace: 'nowrap',
+                zIndex: 5,
+                pointerEvents: 'auto',
+              }
+            : {
+                position: 'absolute',
+                top: 76,
+                left: 16,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 6,
+                zIndex: 5,
+              }
+        }
       >
         {playerStates.map((p) => (
           <PlayerChip key={p.id} player={p} />
@@ -444,14 +489,15 @@ export function GamePage({ onExit }: { onExit?: () => void } = {}): JSX.Element 
 
       <BattleLog entries={logEntries} />
 
-      {/* Bottom action bar — confined to canvas column. */}
+      {/* Bottom action bar — confined to canvas column on desktop, full
+          width on mobile. */}
       <footer
         style={{
           position: 'absolute',
           bottom: 0,
           left: 0,
-          right: 'min(30vw, 360px)',
-          padding: '14px 16px 18px',
+          right: railOffset,
+          padding: isMobile ? '10px 8px 14px' : '14px 16px 18px',
           background:
             'linear-gradient(0deg, rgba(11,13,18,0.92) 0%, rgba(11,13,18,0.0) 100%)',
           display: 'flex',
@@ -575,6 +621,8 @@ function PhasePill({
         color: '#f4ecd8',
         fontSize: '0.9rem',
         fontWeight: 700,
+        whiteSpace: 'nowrap',
+        flexShrink: 0,
       }}
     >
       <span

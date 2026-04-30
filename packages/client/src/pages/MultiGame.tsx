@@ -25,7 +25,12 @@ import {
   type StagePlayer,
 } from '../canvas/GameStage.js';
 import { HandPicker } from '../components/HandPicker.js';
-import { BattleLog, type LogEntry, type LogVerb } from '../components/BattleLog.js';
+import {
+  BattleLog,
+  type LogEntry,
+  type LogVerb,
+  useIsMobile,
+} from '../components/BattleLog.js';
 import { palette, toCss, playerColor } from '../palette.js';
 import {
   isMuted as audioIsMuted,
@@ -281,6 +286,12 @@ export function MultiGamePage(): JSX.Element {
     return 'IDLE';
   }, [snapshot, animatingRound, pendingRounds, me?.hasSubmitted]);
 
+  // Hooks must run unconditionally — `useIsMobile` is called before the
+  // early-return below so React's hook order is stable across renders
+  // when the snapshot first arrives.
+  const isMobile = useIsMobile();
+  const railOffset = isMobile ? '0px' : 'min(30vw, 360px)';
+
   if (!snapshot) {
     return (
       <div
@@ -329,7 +340,7 @@ export function MultiGamePage(): JSX.Element {
           top: 0,
           left: 0,
           bottom: 0,
-          right: 'min(30vw, 360px)',
+          right: railOffset,
         }}
       >
         <GameStage players={stagePlayers} controllerRef={stageRef} />
@@ -340,42 +351,53 @@ export function MultiGamePage(): JSX.Element {
           position: 'absolute',
           top: 0,
           left: 0,
-          right: 'min(30vw, 360px)',
-          padding: '14px 20px',
+          right: railOffset,
+          padding: isMobile ? '10px 12px 8px' : '14px 20px',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
+          gap: 8,
           zIndex: 5,
           pointerEvents: 'none',
           background:
             'linear-gradient(180deg, rgba(11,13,18,0.85) 0%, rgba(11,13,18,0.0) 100%)',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: isMobile ? 8 : 14,
+            minWidth: 0,
+          }}
+        >
           <Knife />
           <h1
             style={{
               margin: 0,
-              fontSize: 'clamp(1.4rem, 2.6vw, 2.2rem)',
+              fontSize: isMobile ? '1.05rem' : 'clamp(1.4rem, 2.6vw, 2.2rem)',
               color: toCss(palette.uiGold),
-              letterSpacing: '0.18em',
+              letterSpacing: isMobile ? '0.08em' : '0.18em',
               textShadow:
                 '0 3px 0 #6a4012, 0 0 18px rgba(247,215,116,0.45)',
               fontWeight: 800,
+              whiteSpace: 'nowrap',
             }}
           >
             小刀一把
           </h1>
-          <span
-            style={{
-              color: '#cfb978',
-              fontSize: '0.75rem',
-              letterSpacing: '0.18em',
-              fontFamily: 'ui-monospace, monospace',
-            }}
-          >
-            房间 {code}
-          </span>
+          {!isMobile ? (
+            <span
+              style={{
+                color: '#cfb978',
+                fontSize: '0.75rem',
+                letterSpacing: '0.18em',
+                fontFamily: 'ui-monospace, monospace',
+              }}
+            >
+              房间 {code}
+            </span>
+          ) : null}
         </div>
 
         <div
@@ -398,6 +420,8 @@ export function MultiGamePage(): JSX.Element {
               color: '#f4ecd8',
               fontSize: '0.9rem',
               fontWeight: 700,
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
             }}
           >
             <span
@@ -435,17 +459,35 @@ export function MultiGamePage(): JSX.Element {
         </div>
       </header>
 
-      {/* Player roster strip */}
+      {/* Player roster strip — vertical column on desktop, horizontal
+          scrolling row on mobile so the canvas isn't covered. */}
       <div
-        style={{
-          position: 'absolute',
-          top: 76,
-          left: 16,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 6,
-          zIndex: 5,
-        }}
+        style={
+          isMobile
+            ? {
+                position: 'absolute',
+                top: 52,
+                left: 0,
+                right: 0,
+                display: 'flex',
+                flexDirection: 'row',
+                gap: 6,
+                padding: '0 8px',
+                overflowX: 'auto',
+                whiteSpace: 'nowrap',
+                zIndex: 5,
+                pointerEvents: 'auto',
+              }
+            : {
+                position: 'absolute',
+                top: 76,
+                left: 16,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 6,
+                zIndex: 5,
+              }
+        }
       >
         {snapshot.players.map((p) => {
           const accent = playerColor(p.id);
@@ -508,14 +550,15 @@ export function MultiGamePage(): JSX.Element {
 
       <BattleLog entries={logEntries} />
 
-      {/* Bottom action bar */}
+      {/* Bottom action bar — full width on mobile, canvas-column-only on
+          desktop. */}
       <footer
         style={{
           position: 'absolute',
           bottom: 0,
           left: 0,
-          right: 'min(30vw, 360px)',
-          padding: '14px 16px 18px',
+          right: railOffset,
+          padding: isMobile ? '10px 8px 14px' : '14px 16px 18px',
           background:
             'linear-gradient(0deg, rgba(11,13,18,0.92) 0%, rgba(11,13,18,0.0) 100%)',
           display: 'flex',
