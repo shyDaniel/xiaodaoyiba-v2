@@ -31,11 +31,16 @@ export type PlayerStage = 'ALIVE_CLOTHED' | 'ALIVE_PANTS_DOWN' | 'DEAD';
 
 /**
  * What an actor (round winner) does to a target (round loser).
- *  - PULL_PANTS: clothed → pants_down. The 扒裤衩 reveal.
- *  - CHOP:       pants_down → dead. The 咔嚓 finisher.
- *  - NONE:       no-op (used when the engine cannot pick a valid pairing).
+ *  - PULL_PANTS:        clothed → pants_down. The 扒裤衩 reveal.
+ *  - CHOP:              pants_down → dead. The 咔嚓 finisher.
+ *  - PULL_OWN_PANTS_UP: SELF action. Winner whose own stage is
+ *                       ALIVE_PANTS_DOWN restores themselves to
+ *                       ALIVE_CLOTHED instead of acting on a loser
+ *                       (FINAL_GOAL §H4). actor === target.
+ *  - NONE:              no-op (used when the engine cannot pick a
+ *                       valid pairing).
  */
-export type ActionKind = 'PULL_PANTS' | 'CHOP' | 'NONE';
+export type ActionKind = 'PULL_PANTS' | 'CHOP' | 'PULL_OWN_PANTS_UP' | 'NONE';
 
 /**
  * 5-phase action timeline (FINAL_GOAL §A5/§B4). The engine tags each action
@@ -77,6 +82,14 @@ export interface PlayerState {
  */
 export interface RoundInputs {
   choices: Record<PlayerId, RpsChoice>;
-  /** Optional: actor → target mapping. Targets must be in the losers set. */
+  /** Optional: actor → target mapping. Targets must be in the losers set,
+   *  EXCEPT when paired with `actions[actor] === 'PULL_OWN_PANTS_UP'` —
+   *  that self-action implies actor===target and the engine accepts the
+   *  actor as their own target without consulting the losers list. */
   targets?: Record<PlayerId, PlayerId>;
+  /** Optional: actor → action override (FINAL_GOAL §H3/§H4). Lets a
+   *  winner pick `'PULL_OWN_PANTS_UP'` when their stage is
+   *  ALIVE_PANTS_DOWN. Engine validates eligibility and falls back to
+   *  the default action (driven by target stage) if invalid. */
+  actions?: Record<PlayerId, ActionKind>;
 }

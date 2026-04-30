@@ -13,7 +13,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { toCss, palette, playerColor } from '../palette.js';
 
-export type LogVerb = '扒' | '砍' | '闪' | '平' | '死' | '胜';
+export type LogVerb = '扒' | '砍' | '闪' | '平' | '死' | '胜' | '穿';
 
 export interface LogEntry {
   id: string;
@@ -34,6 +34,10 @@ const VERB_COLOR: Record<LogVerb, number> = {
   平: palette.uiTie,
   死: palette.uiDeath,
   胜: 0x38c878,
+  // FINAL_GOAL §H7: self-restore badge — cyan, distinct from the chop
+  // red and the pull gold so the log reads "winner clothed themselves
+  // back" at a glance.
+  穿: 0x38c8d8,
 };
 
 export interface BattleLogProps {

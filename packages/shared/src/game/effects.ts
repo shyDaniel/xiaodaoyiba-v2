@@ -118,8 +118,10 @@ export interface NarrationEffect {
   type: 'NARRATION';
   round: number;
   atMs: number;
-  /** Stable hash key for color-coding badges in the BattleLog. */
-  verb: '扒' | '砍' | '闪' | '平' | '死';
+  /** Stable hash key for color-coding badges in the BattleLog.
+   *  穿 — winner self-restored from ALIVE_PANTS_DOWN to ALIVE_CLOTHED
+   *  via PULL_OWN_PANTS_UP (FINAL_GOAL §H7). */
+  verb: '扒' | '砍' | '闪' | '平' | '死' | '穿';
   actor?: PlayerId;
   target?: PlayerId;
   text: string;

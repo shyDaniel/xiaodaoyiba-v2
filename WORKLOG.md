@@ -1412,3 +1412,82 @@ Verification:
   4 distinct sentences appear across 200 rounds.
 - `grep DEFAULT_TIE_LINES engine.ts` → no matches; `grep 箭步上前 engine.ts`
   → no matches. Inline strings fully evicted.
+
+## Iter-37 — S-351 (v5 §H5 META-FIX: --winner-strategy + PULL_OWN_PANTS_UP)
+
+Wired the v5 §H4/§H5 contract that was previously stubbed (sim CLI
+exited 2 on `--winner-strategy`). The acceptance gate was that a
+50-round seeded run under `--winner-strategy random-target+random-action`
+must (a) emit ≥1 row with `action=PULL_OWN_PANTS_UP` and (b) ≥2 distinct
+`winner_picked_target` columns.
+
+**Engine (shared/game):**
+- `types.ts`: extended `ActionKind` with `'PULL_OWN_PANTS_UP'`; added
+  `actions?: Record<PlayerId, ActionKind>` to `RoundInputs` so callers
+  can opt a winner into the self-action.
+- `engine.ts`: pairing loop now checks `inputs.actions[winner]`. When the
+  requested action is `PULL_OWN_PANTS_UP` AND the winner's pre-round
+  stage is `ALIVE_PANTS_DOWN`, the engine builds a (actor, target=actor,
+  kind=PULL_OWN_PANTS_UP) pairing without consuming a loser slot —
+  remaining winners still pair against the unclaimed losers in order.
+  Eligibility gate: a clothed winner asking for self-restore falls back
+  to the default loser pairing. Effect emission adds a third branch
+  alongside PULL_PANTS / CHOP: ACTION at PULL_PANTS start, SET_STAGE
+  flipping winner→ALIVE_CLOTHED at PULL_PANTS+SHAME_FRAME_HOLD_MS,
+  NARRATION (verb='穿').
+- `effects.ts`: extended `NarrationEffect.verb` union with `'穿'`
+  (FINAL_GOAL §H7 cyan badge — winner self-restored).
+- `narrative/lines.ts`: added `pullOwnPantsUpVariants` (7 colloquial
+  Chinese lines, exceeds the §C8 ≥5 floor), `pullOwnPantsUpTemplate`,
+  and threaded through `NarratorShape` + `defaultNarrator`.
+
+**Sim (server/sim.ts):**
+- New `WinnerStrategy = 'auto' | 'random-target+random-action' |
+  'prefer-self-restore'` type with type-guarded `--winner-strategy`
+  parsing. HELP text + examples updated.
+- Pre-resolve RPS in the round loop to know winners before calling
+  `resolveRound`. Per winner, `pickWinnerAgency()` builds the
+  (target, action) override under the configured strategy:
+    - `auto` → defer to engine (returns null).
+    - `prefer-self-restore` → if winner pants-down, force
+      `PULL_OWN_PANTS_UP`; else null.
+    - `random-target+random-action` → uniform sample over the eligible
+      option set: clothed losers (PULL_PANTS), pants-down losers (CHOP),
+      and self-action (PULL_OWN_PANTS_UP) if winner pants-down.
+- Dedicated `agencyRng = seededRng(seed, room, 'winner-agency')` so
+  adding/removing the flag doesn't shift bot RNG sequences. The 2500-
+  round corpus reproducibility under default strategy is unchanged.
+- `RoundReport.winnerPicks: Array<{actor,target,action}>` records the
+  per-winner pick (target='auto' / action='auto' on the default path).
+  `emitRound` adds `winner_picked_target` and `winner_picked_action`
+  columns (joined by '|' across multiple winners; '-' on tie rounds)
+  to both human and JSONL output.
+- `pickAction` extended to recognize `PULL_OWN_PANTS_UP` from the
+  effect stream so the round-level `action` column surfaces it.
+
+**Client (BattleLog.tsx + Game.tsx + MultiGame.tsx + EffectPlayer.ts):**
+- `LogVerb` and the local on-narration entry types extended with `'穿'`.
+  `VERB_COLOR['穿'] = 0x38c8d8` (cyan, distinct from chop red and pull
+  gold per §H7).
+
+**Tests (shared/game/engine.test.ts +110 lines):**
+New `describe` block "PULL_OWN_PANTS_UP self-action (FINAL_GOAL §H4)"
+covering 3 cases: (1) pants-down winner self-restores → ACTION
+(a→a, PULL_OWN_PANTS_UP) + SET_STAGE (a→ALIVE_CLOTHED) + NARRATION
+(verb='穿'); (2) clothed winner asking for self-action falls back to
+default PULL_PANTS; (3) 4-player scenario where a (pants-down)
+self-restores while d still pulls b's pants — proving the self-action
+does not consume a loser slot.
+
+**Verification:**
+- `pnpm -r exec tsc --noEmit` → exit 0 across all 3 packages.
+- `pnpm test` → 134/134 green (shared 78 incl. +3 §H4 cases;
+  server 21; client 35).
+- `pnpm sim --players 4 --bots counter,random,iron,mirror
+   --winner-strategy random-target+random-action --rounds 50 --seed 42
+   --format jsonl`: exit 0, 50 rows; 7 occurrences of
+  `PULL_OWN_PANTS_UP` (in `action` column or pick columns); 17
+  distinct `winner_picked_target` values.
+- `pnpm sim ... --rounds 50 --seed 42` (no --winner-strategy) → exit 0,
+  same tie-rate (0.260) as the auto path; no regression on the §A2
+  budget gates.

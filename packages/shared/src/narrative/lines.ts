@@ -84,6 +84,33 @@ export function deathLine(target: string): string {
   return `${target}应声倒地，再没起来`;
 }
 
+/**
+ * 穿好裤衩 — the self-restore variant pool (FINAL_GOAL §H4). Five+
+ * colloquial lines so a winner who picks PULL_OWN_PANTS_UP across
+ * multiple games / rounds gets flavor variety. Round-stable picker
+ * keeps the headless sim reproducible.
+ */
+export const pullOwnPantsUpVariants: readonly string[] = [
+  '蹲下身, 把裤衩捡回来穿好了',
+  '一把抓住裤腰，重新提了上去',
+  '不慌不忙，把裤衩穿了回去',
+  '低头一看, 哎呀, 赶紧把裤衩穿好了',
+  '抖了抖裤腰，干净利落地穿了回去',
+  '满脸通红，飞快地把裤衩拉了上来',
+  '深吸一口气，把裤衩重新整理好',
+] as const;
+
+/**
+ * 穿好裤衩 template — used by the default narrator when winner.stage
+ * is ALIVE_PANTS_DOWN and they pick PULL_OWN_PANTS_UP. `actor` is
+ * named at the front; the verb-pool sentence completes the line.
+ */
+export function pullOwnPantsUpTemplate(actor: string, round: number): string {
+  const pool = pullOwnPantsUpVariants;
+  const idx = ((round % pool.length) + pool.length) % pool.length;
+  return `${actor}${pool[idx]!}`;
+}
+
 // ── Narrator binding ────────────────────────────────────────────────────
 // Engine imports `defaultNarrator` and uses it as the default narration
 // surface. The shape matches `engine.ts#Narrator`.
@@ -99,6 +126,7 @@ export interface NarratorShape {
   tie: (round: number, reason: TieReason) => string;
   pullPants: (actor: string, target: string, round: number) => string;
   chop: (actor: string, target: string, round: number) => string;
+  pullOwnPantsUp: (actor: string, round: number) => string;
 }
 
 /**
@@ -116,4 +144,5 @@ export const defaultNarrator: NarratorShape = {
   },
   pullPants: (actor, target, round) => pullPantsTemplate(actor, target, round),
   chop: (actor, target, round) => chopTemplate(actor, target, round),
+  pullOwnPantsUp: (actor, round) => pullOwnPantsUpTemplate(actor, round),
 };

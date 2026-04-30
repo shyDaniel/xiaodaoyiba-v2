@@ -238,6 +238,118 @@ describe('resolveRound — DEAD players are skipped', () => {
   });
 });
 
+describe('resolveRound — PULL_OWN_PANTS_UP self-action (FINAL_GOAL §H4)', () => {
+  // §H4: a winner whose pre-round stage is ALIVE_PANTS_DOWN may opt into
+  // the SELF action `PULL_OWN_PANTS_UP` via inputs.actions[winnerId]. The
+  // engine emits ACTION/SET_STAGE/NARRATION effects with actor===target,
+  // flips that winner's stage back to ALIVE_CLOTHED, and does NOT consume
+  // a loser slot for that winner.
+
+  it('flips a pants-down winner back to ALIVE_CLOTHED when they self-restore', () => {
+    // 2 players: a (pants-down winner) vs b (clothed loser). a throws
+    // ROCK, b throws SCISSORS. a wins; instead of pulling b's pants,
+    // a opts to pull their own pants up.
+    const players: PlayerState[] = [
+      { id: 'a', nickname: 'A', stage: 'ALIVE_PANTS_DOWN' },
+      { id: 'b', nickname: 'B', stage: 'ALIVE_CLOTHED' },
+    ];
+    const out = resolveRound(players, 7, {
+      choices: { a: 'ROCK', b: 'SCISSORS' },
+      actions: { a: 'PULL_OWN_PANTS_UP' },
+    });
+
+    expect(out.rps.winners).toEqual(['a']);
+    expect(out.rps.losers).toEqual(['b']);
+
+    const actions = effectsOfType(out.effects, 'ACTION');
+    expect(actions).toHaveLength(1);
+    expect(actions[0]!.actor).toBe('a');
+    expect(actions[0]!.target).toBe('a');
+    expect(actions[0]!.kind).toBe('PULL_OWN_PANTS_UP');
+
+    const setStages = effectsOfType(out.effects, 'SET_STAGE');
+    expect(setStages).toHaveLength(1);
+    expect(setStages[0]!.target).toBe('a');
+    expect(setStages[0]!.stage).toBe('ALIVE_CLOTHED');
+    expect(setStages[0]!.atMs).toBe(PHASE_OFFSETS.PULL_PANTS + SHAME_FRAME_HOLD_MS);
+
+    const narrations = effectsOfType(out.effects, 'NARRATION');
+    expect(narrations).toHaveLength(1);
+    expect(narrations[0]!.verb).toBe('穿');
+    expect(narrations[0]!.actor).toBe('a');
+    expect(narrations[0]!.target).toBe('a');
+    expect(narrations[0]!.text.length).toBeGreaterThan(0);
+
+    // Post-round stages: a self-restored, b untouched.
+    const a = out.players.find((p) => p.id === 'a')!;
+    const b = out.players.find((p) => p.id === 'b')!;
+    expect(a.stage).toBe('ALIVE_CLOTHED');
+    expect(b.stage).toBe('ALIVE_CLOTHED');
+  });
+
+  it('ignores PULL_OWN_PANTS_UP when winner is not pants-down (falls back to default)', () => {
+    // a is clothed, so the self-action is invalid. Engine must fall back
+    // to the default loser pairing (PULL_PANTS on b).
+    const players: PlayerState[] = [
+      { id: 'a', nickname: 'A', stage: 'ALIVE_CLOTHED' },
+      { id: 'b', nickname: 'B', stage: 'ALIVE_CLOTHED' },
+    ];
+    const out = resolveRound(players, 1, {
+      choices: { a: 'ROCK', b: 'SCISSORS' },
+      actions: { a: 'PULL_OWN_PANTS_UP' },
+    });
+
+    const actions = effectsOfType(out.effects, 'ACTION');
+    expect(actions).toHaveLength(1);
+    expect(actions[0]!.actor).toBe('a');
+    expect(actions[0]!.target).toBe('b');
+    expect(actions[0]!.kind).toBe('PULL_PANTS');
+
+    const a = out.players.find((p) => p.id === 'a')!;
+    const b = out.players.find((p) => p.id === 'b')!;
+    expect(a.stage).toBe('ALIVE_CLOTHED');
+    expect(b.stage).toBe('ALIVE_PANTS_DOWN');
+  });
+
+  it('a self-restoring winner does not consume a loser slot for other winners', () => {
+    // 4 players: a (pants-down) and d (clothed) win against b and c.
+    // a opts for self-restore. b should still be available for d to
+    // pull-pants — i.e. a's self-action does NOT claim b.
+    const players: PlayerState[] = [
+      { id: 'a', nickname: 'A', stage: 'ALIVE_PANTS_DOWN' },
+      { id: 'b', nickname: 'B', stage: 'ALIVE_CLOTHED' },
+      { id: 'c', nickname: 'C', stage: 'ALIVE_CLOTHED' },
+      { id: 'd', nickname: 'D', stage: 'ALIVE_CLOTHED' },
+    ];
+    const out = resolveRound(players, 3, {
+      choices: { a: 'ROCK', b: 'PAPER', c: 'SCISSORS', d: 'ROCK' },
+      actions: { a: 'PULL_OWN_PANTS_UP' },
+    });
+
+    expect(out.rps.winners).toEqual(['a', 'd']);
+    expect(out.rps.losers).toEqual(['b', 'c']);
+
+    const actions = effectsOfType(out.effects, 'ACTION');
+    // Two actions total: a self-restore + d pulling first available
+    // unclaimed loser (b).
+    expect(actions).toHaveLength(2);
+    const pairings = actions.map((x) => `${x.actor}->${x.target}:${x.kind}`);
+    expect(pairings).toEqual([
+      'a->a:PULL_OWN_PANTS_UP',
+      'd->b:PULL_PANTS',
+    ]);
+
+    const a = out.players.find((p) => p.id === 'a')!;
+    const b = out.players.find((p) => p.id === 'b')!;
+    const c = out.players.find((p) => p.id === 'c')!;
+    const d = out.players.find((p) => p.id === 'd')!;
+    expect(a.stage).toBe('ALIVE_CLOTHED');
+    expect(b.stage).toBe('ALIVE_PANTS_DOWN');
+    expect(c.stage).toBe('ALIVE_CLOTHED');
+    expect(d.stage).toBe('ALIVE_CLOTHED');
+  });
+});
+
 describe('resolveRound — explicit target overrides', () => {
   it('uses inputs.targets when valid', () => {
     const players = mkPlayers(['a', 'b', 'c', 'd']);

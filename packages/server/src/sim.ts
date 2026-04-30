@@ -33,8 +33,10 @@ import {
   isBotKind,
   resetBotCaches,
   resolveRound,
+  resolveRps,
   seededRng,
   SHARED_PACKAGE_VERSION,
+  type ActionKind,
   type BotContext,
   type BotKind,
   type BotStrategy,
@@ -46,6 +48,27 @@ import {
   type RpsChoice,
 } from '@xdyb/shared';
 
+/** Winner-agency strategies for the headless sim (FINAL_GOAL §H5).
+ *  - 'auto' — engine default (winner pairs with first eligible loser).
+ *  - 'random-target+random-action' — sim picks uniformly among eligible
+ *    targets and eligible actions, simulating an indifferent human.
+ *  - 'prefer-self-restore' — if winner is pants-down, always pick
+ *    PULL_OWN_PANTS_UP; otherwise pick the default loser pairing. */
+export type WinnerStrategy =
+  | 'auto'
+  | 'random-target+random-action'
+  | 'prefer-self-restore';
+
+const WINNER_STRATEGIES: readonly WinnerStrategy[] = [
+  'auto',
+  'random-target+random-action',
+  'prefer-self-restore',
+] as const;
+
+function isWinnerStrategy(s: string): s is WinnerStrategy {
+  return (WINNER_STRATEGIES as readonly string[]).includes(s);
+}
+
 interface ParsedArgs {
   players: number;
   bots: BotKind[];
@@ -55,6 +78,7 @@ interface ParsedArgs {
   quiet: boolean;
   help: boolean;
   strict: boolean;
+  winnerStrategy: WinnerStrategy;
 }
 
 const HELP = `xdyb-sim — headless game simulator (shared@${SHARED_PACKAGE_VERSION})
@@ -62,6 +86,7 @@ const HELP = `xdyb-sim — headless game simulator (shared@${SHARED_PACKAGE_VERS
 Usage:
   pnpm sim [--players N] [--bots LIST] [--rounds R] [--seed S]
            [--format human|jsonl] [--quiet] [--strict|--no-strict]
+           [--winner-strategy auto|random-target+random-action|prefer-self-restore]
 
 Flags:
   --players  Players in the room (default 4). Player 0 is human-shaped
@@ -75,11 +100,22 @@ Flags:
   --quiet    Suppress per-round output; print only the final summary.
   --strict   Exit non-zero on §A2 budget violations (default: true when
              --rounds >= 20, false otherwise). Use --no-strict to suppress.
+  --winner-strategy
+             How winners pick a target+action when ≥2 are eligible
+             (FINAL_GOAL §H5). One of:
+               auto                          (default — engine pairs
+                                              winner with first loser)
+               random-target+random-action   (uniform random over
+                                              eligible options)
+               prefer-self-restore           (pants-down winners always
+                                              pick PULL_OWN_PANTS_UP)
   -h, --help Show this help and exit.
 
 Examples:
   pnpm sim --players 4 --bots counter,random,iron,mirror --rounds 50 --seed 42
   pnpm sim --rounds 200 --seed 1 --format jsonl --quiet
+  pnpm sim --players 4 --bots counter,random,iron,mirror --rounds 50 \\
+           --seed 42 --winner-strategy random-target+random-action
 `;
 
 function parseArgs(argv: readonly string[]): ParsedArgs {
@@ -96,6 +132,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     quiet: false,
     help: false,
     strict: false,
+    winnerStrategy: 'auto',
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
@@ -168,6 +205,16 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
         out.strict = false;
         strictExplicit = true;
         break;
+      case '--winner-strategy': {
+        const v = peek();
+        if (!isWinnerStrategy(v)) {
+          throw new Error(
+            `--winner-strategy must be one of: ${WINNER_STRATEGIES.join(', ')}; got: ${v}`,
+          );
+        }
+        out.winnerStrategy = v;
+        break;
+      }
       default:
         throw new Error(`unknown flag: ${a} (try --help)`);
     }
@@ -237,12 +284,21 @@ interface RoundReport {
   throws: Array<readonly [string, RpsChoice]>;
   winners: string[];
   losers: string[];
-  action: 'PULL_PANTS' | 'CHOP' | 'TIE' | 'NONE';
+  action: 'PULL_PANTS' | 'CHOP' | 'PULL_OWN_PANTS_UP' | 'TIE' | 'NONE';
   target: string | null;
   narration: string;
   isGameOver: boolean;
   winnerId: string | null;
   isTie: boolean;
+  /** Per-winner agency record (FINAL_GOAL §H5). For each round-winner,
+   *  the target+action the simulator chose under `--winner-strategy`.
+   *  `'auto'` indicates the engine picked (default strategy). Empty
+   *  on tie rounds. */
+  winnerPicks: Array<{
+    actor: string;
+    target: string | 'auto';
+    action: ActionKind | 'auto';
+  }>;
 }
 
 interface SummaryStats {
@@ -261,7 +317,11 @@ function pickAction(effects: ReadonlyArray<Effect>): {
 } {
   for (const e of effects) {
     if (e.type === 'ACTION') {
-      if (e.kind === 'PULL_PANTS' || e.kind === 'CHOP') {
+      if (
+        e.kind === 'PULL_PANTS' ||
+        e.kind === 'CHOP' ||
+        e.kind === 'PULL_OWN_PANTS_UP'
+      ) {
         return { action: e.kind, target: e.target };
       }
     }
@@ -269,9 +329,61 @@ function pickAction(effects: ReadonlyArray<Effect>): {
   return { action: 'NONE', target: null };
 }
 
+/** Per-winner agency picker for the headless sim. Given a winner, the
+ *  pre-round players, the resolved RPS losers, and the configured
+ *  strategy, returns the (target, action) pair the simulator wants the
+ *  engine to use. Returns `null` on the 'auto' path to leave the engine
+ *  default in place.
+ *
+ *  Eligible actions:
+ *    - PULL_OWN_PANTS_UP — self-action, requires winner.stage === 'ALIVE_PANTS_DOWN'
+ *    - PULL_PANTS         — requires ≥1 loser whose stage === 'ALIVE_CLOTHED'
+ *    - CHOP               — requires ≥1 loser whose stage === 'ALIVE_PANTS_DOWN'
+ *  When PULL_PANTS or CHOP is picked, the target is sampled uniformly
+ *  among loser-players whose stage matches the action.
+ */
+function pickWinnerAgency(
+  strategy: WinnerStrategy,
+  winner: PlayerState,
+  losers: ReadonlyArray<PlayerState>,
+  rng: Rng,
+): { target: string; action: ActionKind } | null {
+  if (strategy === 'auto') return null;
+
+  const clothedLosers = losers.filter((p) => p.stage === 'ALIVE_CLOTHED');
+  const pantsDownLosers = losers.filter((p) => p.stage === 'ALIVE_PANTS_DOWN');
+  const winnerCanSelfRestore = winner.stage === 'ALIVE_PANTS_DOWN';
+
+  if (strategy === 'prefer-self-restore') {
+    if (winnerCanSelfRestore) {
+      return { target: winner.id, action: 'PULL_OWN_PANTS_UP' };
+    }
+    // Fall through: no eligible self-action, so leave engine default.
+    return null;
+  }
+
+  // strategy === 'random-target+random-action'
+  type Option = { target: string; action: ActionKind };
+  const options: Option[] = [];
+  for (const l of clothedLosers) options.push({ target: l.id, action: 'PULL_PANTS' });
+  for (const l of pantsDownLosers) options.push({ target: l.id, action: 'CHOP' });
+  if (winnerCanSelfRestore) {
+    options.push({ target: winner.id, action: 'PULL_OWN_PANTS_UP' });
+  }
+  if (options.length === 0) return null;
+  const idx = Math.floor(rng() * options.length) % options.length;
+  return options[idx]!;
+}
+
 function runSim(args: ParsedArgs): { stats: SummaryStats; reports: RoundReport[] } {
   resetBotCaches();
   const slots = buildSlots(args);
+
+  // Dedicated RNG for winner-agency choices, derived from the global seed
+  // so a sim run with --winner-strategy random-target+random-action is
+  // fully reproducible. Distinct from per-bot RNGs so adding/removing the
+  // flag doesn't shift the bot RNG sequence.
+  const agencyRng: Rng = seededRng(args.seed, `sim-${args.seed}`, 'winner-agency');
 
   const stats: SummaryStats = {
     games: 0,
@@ -326,7 +438,50 @@ function runSim(args: ParsedArgs): { stats: SummaryStats; reports: RoundReport[]
       stats.throwsByPlayer[slot.id] = (stats.throwsByPlayer[slot.id] ?? 0) + 1;
     }
 
-    const inputs: RoundInputs = { choices };
+    // Pre-resolve RPS to know who won this round, so the agency picker
+    // can build per-winner target+action overrides. resolveRps is pure
+    // and cheap; running it twice (here + inside resolveRound) is fine.
+    const orderedAlive: Array<readonly [string, RpsChoice]> = [];
+    for (const p of players) {
+      if (p.stage === 'DEAD') continue;
+      const c = choices[p.id];
+      if (c === undefined) continue;
+      orderedAlive.push([p.id, c] as const);
+    }
+    const preRps = resolveRps(orderedAlive);
+
+    // Build per-winner agency overrides based on --winner-strategy.
+    const targetsInput: Record<string, string> = {};
+    const actionsInput: Record<string, ActionKind> = {};
+    const winnerPicks: RoundReport['winnerPicks'] = [];
+    if (!preRps.tie && args.winnerStrategy !== 'auto') {
+      const losersStates = preRps.losers
+        .map((id) => players.find((p) => p.id === id))
+        .filter((p): p is PlayerState => p !== undefined);
+      for (const winnerId of preRps.winners) {
+        const winner = players.find((p) => p.id === winnerId);
+        if (winner === undefined) continue;
+        const pick = pickWinnerAgency(args.winnerStrategy, winner, losersStates, agencyRng);
+        if (pick !== null) {
+          targetsInput[winnerId] = pick.target;
+          actionsInput[winnerId] = pick.action;
+          winnerPicks.push({ actor: winnerId, target: pick.target, action: pick.action });
+        } else {
+          winnerPicks.push({ actor: winnerId, target: 'auto', action: 'auto' });
+        }
+      }
+    } else if (!preRps.tie) {
+      // 'auto' strategy — record that each winner deferred to the engine.
+      for (const winnerId of preRps.winners) {
+        winnerPicks.push({ actor: winnerId, target: 'auto', action: 'auto' });
+      }
+    }
+
+    const inputs: RoundInputs = {
+      choices,
+      ...(Object.keys(targetsInput).length > 0 ? { targets: targetsInput } : {}),
+      ...(Object.keys(actionsInput).length > 0 ? { actions: actionsInput } : {}),
+    };
     const result = resolveRound(players, gameRound, inputs);
     stats.rounds += 1;
 
@@ -347,6 +502,7 @@ function runSim(args: ParsedArgs): { stats: SummaryStats; reports: RoundReport[]
       isGameOver: result.isGameOver,
       winnerId: result.winnerId,
       isTie,
+      winnerPicks,
     };
     reports.push(report);
     if (!args.quiet) emitRound(report, args.format);
@@ -384,6 +540,16 @@ function runSim(args: ParsedArgs): { stats: SummaryStats; reports: RoundReport[]
 }
 
 function emitRound(r: RoundReport, format: ParsedArgs['format']): void {
+  // Aggregate the per-winner picks into round-level columns so a single
+  // JSONL/human row remains grep-friendly. When ≥1 winner picked
+  // explicitly, list each pick separated by '|'; otherwise emit 'auto'.
+  const pickedTarget = r.winnerPicks.length === 0
+    ? '-'
+    : r.winnerPicks.map((p) => p.target).join('|');
+  const pickedAction = r.winnerPicks.length === 0
+    ? '-'
+    : r.winnerPicks.map((p) => p.action).join('|');
+
   if (format === 'jsonl') {
     process.stdout.write(
       JSON.stringify({
@@ -399,6 +565,9 @@ function emitRound(r: RoundReport, format: ParsedArgs['format']): void {
         isTie: r.isTie,
         isGameOver: r.isGameOver,
         winnerId: r.winnerId,
+        winner_picked_target: pickedTarget,
+        winner_picked_action: pickedAction,
+        winner_picks: r.winnerPicks,
       }) + '\n',
     );
     return;
@@ -412,7 +581,9 @@ function emitRound(r: RoundReport, format: ParsedArgs['format']): void {
   process.stdout.write(
     `round=${r.round} game=${r.game} gameRound=${r.gameRound} ` +
       `throws=[${throws}] winners=[${winners}] losers=[${losers}] ` +
-      `action=${r.action} target=${target} narration="${narration}"\n`,
+      `action=${r.action} target=${target} ` +
+      `winner_picked_target=${pickedTarget} winner_picked_action=${pickedAction} ` +
+      `narration="${narration}"\n`,
   );
 }
 

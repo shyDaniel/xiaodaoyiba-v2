@@ -81,7 +81,7 @@ export interface PlayEffectsOptions {
   onNarration?: (entry: {
     atMs: number;
     text: string;
-    verb: '扒' | '砍' | '闪' | '平' | '死';
+    verb: '扒' | '砍' | '闪' | '平' | '死' | '穿';
     actor?: PlayerId;
     target?: PlayerId;
   }) => void;

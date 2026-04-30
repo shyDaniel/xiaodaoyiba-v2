@@ -194,7 +194,7 @@ export function GamePage({ onExit }: { onExit?: () => void } = {}): JSX.Element 
       const onNarration = (entry: {
         atMs: number;
         text: string;
-        verb: '扒' | '砍' | '闪' | '平' | '死';
+        verb: '扒' | '砍' | '闪' | '平' | '死' | '穿';
         actor?: string;
         target?: string;
       }): void => {

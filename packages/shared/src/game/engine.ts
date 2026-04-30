@@ -99,6 +99,7 @@ export interface Narrator {
   tie: (round: number, reason: 'all-same' | 'all-equal' | 'empty') => string;
   pullPants: (actorName: string, targetName: string, round: number) => string;
   chop: (actorName: string, targetName: string, round: number) => string;
+  pullOwnPantsUp: (actorName: string, round: number) => string;
 }
 
 // Default narration is now sourced from `../narrative/lines.ts` (the
@@ -218,10 +219,35 @@ export function resolveRound(
   // Pair winners → losers in winner-input-order. Each loser can be claimed
   // at most once. Explicit targets in inputs.targets win; otherwise we pick
   // the first not-yet-claimed loser.
+  //
+  // NEW (FINAL_GOAL §H4): a winner whose own pre-round stage is
+  // ALIVE_PANTS_DOWN may opt into the SELF action `PULL_OWN_PANTS_UP` by
+  // setting `inputs.actions[winnerId] = 'PULL_OWN_PANTS_UP'`. That winner
+  // does NOT consume a loser slot — losers remain available for the next
+  // winner in iteration order.
   const claimed = new Set<PlayerId>();
   const targetInputs = inputs.targets ?? {};
+  const actionInputs = inputs.actions ?? {};
   const pairings: Array<{ actor: PlayerId; target: PlayerId; kind: ActionKind }> = [];
   for (const actor of rps.winners) {
+    const actorPlayer = players.find((p) => p.id === actor)!;
+    const requestedAction = actionInputs[actor];
+
+    // Self-action path (PULL_OWN_PANTS_UP). Eligibility: actor is currently
+    // pants-down. Requires no loser slot; consumes nothing.
+    if (
+      requestedAction === 'PULL_OWN_PANTS_UP' &&
+      actorPlayer.stage === 'ALIVE_PANTS_DOWN'
+    ) {
+      pairings.push({
+        actor,
+        target: actor, // self
+        kind: 'PULL_OWN_PANTS_UP',
+      });
+      continue;
+    }
+
+    // Default loser-targeting path.
     let chosen: PlayerId | undefined;
     const requested = targetInputs[actor];
     if (
@@ -283,7 +309,7 @@ export function resolveRound(
         text,
       });
       narrationLines.push(text);
-    } else {
+    } else if (pairing.kind === 'CHOP') {
       // CHOP: stage flip at STRIKE start (the swing connects).
       target.stage = 'DEAD';
       effects.push({
@@ -299,6 +325,30 @@ export function resolveRound(
         round,
         atMs: PHASE_OFFSETS.STRIKE,
         verb: '砍',
+        actor: actor.id,
+        target: target.id,
+        text,
+      });
+      narrationLines.push(text);
+    } else if (pairing.kind === 'PULL_OWN_PANTS_UP') {
+      // Self-restore: actor === target, no losers affected. Winner's
+      // stage flips ALIVE_PANTS_DOWN → ALIVE_CLOTHED at the same atMs as
+      // a pull's stage flip (after the shame hold) — the UI gets the
+      // same hold-and-reveal beat the pull-pants animation already uses.
+      target.stage = 'ALIVE_CLOTHED';
+      effects.push({
+        type: 'SET_STAGE',
+        round,
+        atMs: atActionMs + SHAME_FRAME_HOLD_MS,
+        target: target.id,
+        stage: 'ALIVE_CLOTHED',
+      });
+      const text = narrator.pullOwnPantsUp(actor.nickname, round);
+      effects.push({
+        type: 'NARRATION',
+        round,
+        atMs: atActionMs,
+        verb: '穿',
         actor: actor.id,
         target: target.id,
         text,
