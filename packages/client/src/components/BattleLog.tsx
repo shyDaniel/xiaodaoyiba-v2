@@ -12,6 +12,11 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { toCss, palette, playerColor } from '../palette.js';
+import {
+  RpsGlyph,
+  RPS_TOKEN_SENTINEL,
+  parseRpsToken,
+} from './RpsGlyph.js';
 
 export type LogVerb = '扒' | '砍' | '闪' | '平' | '死' | '胜' | '穿' | '掷';
 
@@ -473,11 +478,72 @@ function LogRow({ entry }: { entry: LogEntry }): JSX.Element {
         style={{ color: '#f4ecd8' }}
         // Apply per-actor coloring if actors provided. Cheaper than parsing
         // the string: callers pre-format. We just ensure the text reads.
+        // RPS choice tokens (`\u0001ROCK\u0001` / PAPER / SCISSORS) are
+        // expanded to inline <RpsGlyph/> SVG icons FIRST so the actor
+        // colorizer never sees a control character. Tokens guarantee the
+        // R{N}.rps row renders identically in headless Chromium and on
+        // Android Chrome subsets without a color-emoji font (FINAL_GOAL
+        // / ARCHITECTURE.md §H2: "no emoji in the chrome layer").
       >
-        {colorizeActors(entry.text, entry.actors ?? [])}
+        {renderLogText(entry.text, entry.actors ?? [])}
       </div>
     </div>
   );
+}
+
+/** Render a log entry's text with both inline RPS-glyph SVGs (in place
+ *  of `\u0001ROCK\u0001` etc. tokens) and per-actor color spans. The
+ *  pipeline is: 1) split on the U+0001 sentinel into alternating
+ *  text/token segments, 2) for each text segment apply the existing
+ *  actor colorizer, 3) for each token segment emit an <RpsGlyph/>.
+ *  The two-stage split is necessary because the actor colorizer uses
+ *  String.indexOf substring matching, and a stray control character in
+ *  the middle of a substring would mis-anchor the search. */
+function renderLogText(text: string, actors: string[]): JSX.Element[] {
+  const out: JSX.Element[] = [];
+  // Split keeps both the text between sentinels and the token payloads.
+  // Even-index segments are plain text; odd-index segments are token
+  // payloads (e.g. "ROCK"). A non-token sentinel pair (or an unknown
+  // payload) is preserved as plain text so the row never silently drops
+  // characters if the token contract drifts.
+  const parts = text.split(RPS_TOKEN_SENTINEL);
+  let key = 0;
+  parts.forEach((segment, idx) => {
+    if (idx % 2 === 0) {
+      // Plain-text segment — run it through the actor colorizer with a
+      // fresh-key offset so React keys stay stable across re-renders.
+      for (const node of colorizeActors(segment, actors)) {
+        out.push(<span key={`s${key++}`}>{node}</span>);
+      }
+      return;
+    }
+    const choice = parseRpsToken(segment);
+    if (choice) {
+      out.push(
+        <span
+          key={`g${key++}`}
+          style={{
+            display: 'inline-block',
+            margin: '0 1px',
+            verticalAlign: 'middle',
+          }}
+        >
+          <RpsGlyph kind={choice} size={18} color="#1a1208" fill="#fff2d4" />
+        </span>,
+      );
+    } else {
+      // Unrecognized token payload — re-attach the sentinels so the raw
+      // text round-trips visibly (debugging aid).
+      out.push(
+        <span key={`u${key++}`}>
+          {RPS_TOKEN_SENTINEL}
+          {segment}
+          {RPS_TOKEN_SENTINEL}
+        </span>,
+      );
+    }
+  });
+  return out;
 }
 
 function colorizeActors(text: string, actors: string[]): JSX.Element[] {

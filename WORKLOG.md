@@ -1765,3 +1765,61 @@ bottom of the rect. At 375×667 this clamps to ≈ 0.85.
 - `Ground.setBands()` is a pure addition; without a call the class
   falls back to its previous defaults, so any old caller that doesn't
   yet know about playable-rect alignment continues to work identically.
+
+## Iter-44 — S-385: BattleLog rps row uses inline SVG glyphs (no emoji)
+
+**What:** Replaced the ✊✋✌ Unicode-emoji glyphs that the
+`R{N}.rps  throws=[…]  winners=[…]` row was building in `Game.tsx`
+with a sentinel-token contract that BattleLog expands into inline
+`<RpsGlyph/>` SVG icons at render time.
+
+**Why:** Headless Chromium (and Android Chrome subsets without Noto
+Color Emoji) rendered ✊✋✌ as `.notdef` tofu boxes — directly
+violating ARCHITECTURE.md's "no emoji in the chrome layer; all glyphs
+are inline SVG so they render identically across browsers." Iter-44
+judge confirmed the pixel symptom in `judge-iter44-reveal-phase.png`
++ `judge-iter44-r1-result.png`: DOM text was correct
+(`throws=[✊✋✊✌] winners=[✊×2]`) but the pixels under each glyph were
+unreadable boxes.
+
+**How:**
+- New `packages/client/src/components/RpsGlyph.tsx` exports
+  `RpsGlyph` (inline 18-px SVG matching HandPicker's drawing
+  language), plus a sentinel-bracketed token contract
+  (`rpsToken('ROCK')` → `\u0001ROCK\u0001`, `parseRpsToken()` to
+  decode). U+0001 (C0 control) is the splitter sentinel because it
+  never appears in narration text and round-trips through React
+  safely.
+- `packages/client/src/pages/Game.tsx` now imports `rpsToken` and
+  emits the throws/winners substrings as
+  `${rpsToken(choice)}…${rpsToken(winningChoice)}×N`. Removed the
+  obsolete `CHOICE_GLYPH` Unicode map.
+- `packages/client/src/components/BattleLog.tsx` `LogRow` now calls
+  `renderLogText(text, actors)` instead of `colorizeActors(text,
+  actors)`. The new helper splits the entry text on the U+0001
+  sentinel, replaces token segments with inline `<RpsGlyph/>` SVGs,
+  and forwards the remaining plain-text segments to the existing
+  actor colorizer. Two-stage split is needed because the colorizer
+  uses substring `indexOf` matching and a stray control char would
+  mis-anchor the search.
+
+**Verification (acceptance test per S-385):**
+- New `src/components/RpsGlyph.test.tsx` (5 cases): tokens round-trip,
+  rps row renders ≥ 5 inline `<svg>` elements (each with non-empty
+  paths and 0 0 48 48 viewBox), zero ✊✋✌ Unicode in the rendered
+  DOM, zero sentinels leak into the textContent, actor colorization
+  still works alongside tokens.
+- `pnpm -r test` → **169/169** pass (shared 79; server 21; client 69,
+  including the new RpsGlyph 5).
+- `pnpm build` exits 0; client bundle 542.68 kB (gzip 173.26 kB),
+  +0.5 kB vs S-380 (the small SVG component).
+- Drove headless Chromium via Playwright MCP (no system color-emoji
+  font): `s385-after-r1.png` shows the BattleLog R1.rps row with
+  clear chunky fist/palm/V silhouettes — no `.notdef` tofu. DOM
+  inspection (`page.evaluate`): `throws=[…] winners=[…×1]` row has 5
+  inline `<svg>` elements at 18×18 px each, every SVG has 3-4 path
+  primitives, `hasEmoji: false`, `hasSentinel: false`.
+- Bounding-box check vs HandPicker: HandPicker SVG is 41 px (button
+  size), BattleLog SVG is 18 px (inline-text size); both share the
+  same 48×48 viewBox so the silhouettes are visually identical at
+  different scales.

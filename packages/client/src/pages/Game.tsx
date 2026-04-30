@@ -49,15 +49,17 @@ interface BotProfile {
 
 const SHAPES: RpsChoice[] = ['ROCK', 'PAPER', 'SCISSORS'];
 
-/** Glyphs for the BattleLog `R{N}.rps throws=[…]` row (FINAL_GOAL §H2).
- *  We use the canonical fist/palm/V emoji per spec rather than the in-canvas
- *  drawn shapes — log rendering uses system fonts, where these glyphs are
- *  universally supported. */
-const CHOICE_GLYPH: Record<RpsChoice, string> = {
-  ROCK: '✊',
-  PAPER: '✋',
-  SCISSORS: '✌',
-};
+// Glyphs for the BattleLog `R{N}.rps throws=[…]` row (FINAL_GOAL §H2).
+// Earlier iterations used the canonical fist/palm/V color emoji (✊✋✌)
+// embedded in the log text, but headless Chromium (and Android Chrome
+// subsets without Noto Color Emoji) rendered those code points as
+// .notdef tofu boxes — directly violating ARCHITECTURE.md's "no emoji
+// in the chrome layer" rule. We now emit a sentinel-bracketed token
+// (`\u0001ROCK\u0001`, etc.) which BattleLog parses and replaces with
+// an inline <RpsGlyph/> SVG icon at render time. The producer-side
+// helper lives in components/RpsGlyph.tsx so the icon contract is
+// shared with HandPicker's drawing language.
+import { rpsToken } from '../components/RpsGlyph.js';
 
 function pickRandom(): RpsChoice {
   const i = Math.floor(Math.random() * 3);
@@ -316,13 +318,13 @@ export function GamePage({ onExit }: { onExit?: () => void } = {}): JSX.Element 
       );
       if (reveal) {
         const throwsText = reveal.throws
-          .map((t) => CHOICE_GLYPH[t.choice])
+          .map((t) => rpsToken(t.choice))
           .join('');
         const winningChoice = result.rps.winningChoice;
         const winnersText =
           result.rps.tie || !winningChoice
             ? '平'
-            : `${CHOICE_GLYPH[winningChoice]}×${result.rps.winners.length}`;
+            : `${rpsToken(winningChoice)}×${result.rps.winners.length}`;
         const actorIds = reveal.throws.map((t) => {
           const p = playerStates.find((pp) => pp.id === t.playerId);
           return p ? `${p.nickname}|${p.id}` : t.playerId;
