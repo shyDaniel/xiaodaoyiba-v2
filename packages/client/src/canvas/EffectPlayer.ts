@@ -27,7 +27,6 @@ import type {
   PlayerState,
 } from '@xdyb/shared';
 import {
-  PHASE_T_IMPACT,
   PHASE_T_PULL_PANTS,
   PHASE_T_REVEAL,
   PHASE_T_RUSH,
@@ -297,6 +296,19 @@ export class EffectPlayer {
       const atStrike = atPullPants + PHASE_T_PULL_PANTS;     // 3300
       const atImpact = atStrike + PHASE_T_STRIKE;            // 3900
 
+      // §K3 cinematic zoom-pan-zoom triplet. Total budget 1800ms:
+      //   t=PULL_PANTS:        1.0 → 1.6 over 600ms (ease-out)
+      //   t=PULL_PANTS+600:    HOLD 1.6 for 800ms (shame frame)
+      //   t=PULL_PANTS+1400:   1.6 → 1.0 over 400ms (ease-in)
+      // PULL_PANTS focal: midpoint of actor + target standing positions.
+      // CHOP focal:       target's house door (victim.view shifted up to
+      //                   roof/door height — ~96px above the feet line).
+      const ZOOM_IN_MS = 600;
+      const ZOOM_HOLD_MS = 800;
+      const ZOOM_OUT_MS = 400;
+      const ZOOM_PEAK = 1.6;
+      const atZoomOut = atPullPants + ZOOM_IN_MS + ZOOM_HOLD_MS;
+
       // PREP: anticipation crouch. After §H2 the round opens with a
       // REVEAL hold, so PREP starts at PHASE_T_REVEAL (1500ms), not
       // t=0. Derived from the ACTION effect's canonical atMs anchor
@@ -337,16 +349,18 @@ export class EffectPlayer {
           actor.setState('PULL');
           victim.setState('SHAME');
           victim.slideTopPantsDown(PHASE_T_PULL_PANTS);
-          // Camera juice (FINAL_GOAL §C4): zoom in on the attacker over
-          // the entire PULL_PANTS phase so their face/grab pose blooms
-          // forward as the briefs slide. Anchor on the actor's current
-          // world position so the zoom origin tracks them, not the
-          // origin. ease-out matches the spec.
+          // §K3 cinematic zoom IN: 1.0 → 1.6× over 600ms ease-out, focal
+          // at the midpoint of actor + target so both faces fill the
+          // frame as the briefs drop. The HOLD is "do nothing" — the
+          // camera tween completes and scale stays at 1.6 until the
+          // matching ZOOM-OUT scheduled at atZoomOut fires.
+          const focalX = (actor.view.x + victim.view.x) / 2;
+          const focalY = (actor.view.y + victim.view.y) / 2 - 48;
           this.scene.camera?.zoomTo(
-            actor.view.x,
-            actor.view.y - 64,
-            1.1,
-            PHASE_T_PULL_PANTS,
+            focalX,
+            focalY,
+            ZOOM_PEAK,
+            ZOOM_IN_MS,
             'out',
           );
           // SFX stack: pull whoop + cloth tear (layered) + a victim gasp
@@ -378,7 +392,37 @@ export class EffectPlayer {
           // because pantsDown persists from prior round.
           actor.setState('PULL');
           victim.setState('SHAME');
+          // §K3 cinematic zoom IN: same triplet as PULL_PANTS but
+          // focal on the target's house door (~96px above the victim's
+          // feet line — house anchor is center-bottom). When the blade
+          // bites at STRIKE the splinters bloom at scale.
+          const houseDoorX = victim.view.x;
+          const houseDoorY = victim.view.y - 96;
+          this.scene.camera?.zoomTo(
+            houseDoorX,
+            houseDoorY,
+            ZOOM_PEAK,
+            ZOOM_IN_MS,
+            'out',
+          );
         }
+      });
+
+      // §K3 ZOOM-OUT beat: 1.6 → 1.0 over 400ms ease-in. Fires after
+      // the 600ms zoom-in + 800ms hold (= shame frame), regardless of
+      // PULL_PANTS vs CHOP — both share the same triplet timing.
+      scheduleAt(this.timers, t0, atZoomOut, () => {
+        // Recenter on stage middle for the pull-back. Use the midpoint
+        // between actor's home and the target as a sane neutral point.
+        const recenterX = (actorHomeX + victimX) / 2;
+        const recenterY = victim.view.y - 48;
+        this.scene.camera?.zoomTo(
+          recenterX,
+          recenterY,
+          1.0,
+          ZOOM_OUT_MS,
+          'in-out',
+        );
       });
 
       // STRIKE: actor swings the knife. For PULL_PANTS rounds this is
@@ -423,19 +467,12 @@ export class EffectPlayer {
 
       // IMPACT: actor relaxes to IDLE but STAYS at the target's house
       // through the end of the round (FINAL_GOAL §K2 — RETURN beat
-      // dropped). Camera pulls back to neutral 1.0 over PHASE_T_IMPACT
-      // so the next round starts un-zoomed (§C4 zoom is per-action, not
-      // persistent). The actor's teleport home happens via reset()
-      // before the next round's PREP.
+      // dropped). The §K3 zoom-out triplet has already pulled the
+      // camera back to neutral 1.0 by atZoomOut+ZOOM_OUT_MS=4200, so
+      // we don't re-issue a zoom here. The actor's teleport home
+      // happens via reset() before the next round's PREP.
       scheduleAt(this.timers, t0, atImpact, () => {
         actor.setState('IDLE');
-        this.scene.camera?.zoomTo(
-          actor.view.x,
-          actor.view.y - 64,
-          1.0,
-          PHASE_T_IMPACT,
-          'in-out',
-        );
       });
 
       // After the slide completes, lock pants-down so the briefs

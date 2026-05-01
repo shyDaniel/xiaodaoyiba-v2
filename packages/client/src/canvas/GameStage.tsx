@@ -222,6 +222,14 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
         // camera shake / PULL_PANTS zoom.
         camera.addLayer({ container: plaqueLayer, parallax: 1.0, anchorX: cx, anchorY: cy });
 
+        // DEV-only: expose the camera handle on window for eval / Playwright
+        // probing. Used by the §K3 cinematic-zoom verification harness to
+        // sample camera.getScale() at the PULL_PANTS midpoint without having
+        // to eyeball pixel diffs. Kept in production builds too — it's a
+        // single object reference, costs nothing, and unlocks DOM-side
+        // animation regression tests forever.
+        (globalThis as { __xdybCamera?: Camera }).__xdybCamera = camera;
+
         // EffectPlayer reads the live characters/homeX maps via these
         // closures — so it always sees the current scene, even after
         // reconcile cycles.

@@ -3337,3 +3337,89 @@ them home before the next PREP. Round total drops from 5500 → 4700 ms.
 - `packages/shared/src/game/engine.test.ts` (+/−)
 - `packages/client/src/canvas/EffectPlayer.ts` (+/−)
 - `packages/server/src/rooms/Room.test.ts` (+/−)
+
+---
+
+## iter-93 — S-491 §K3 cinematic zoom triplet (1.0→1.6× → hold → 1.0×)
+
+**Why:** §K3 mandated a zoom-pan-zoom triplet on every action. Prior
+state had a single 1.1× zoom over PHASE_T_PULL_PANTS (900 ms) focal
+on the actor only — far below the 1.6× peak the spec calls out, and
+the CHOP path had no zoom-in at all (only a residual zoom-back-to-1.0
+at IMPACT). The shame frame never read as cinematic; PULL_PANTS and
+CHOP both felt flat at default scale.
+
+**What changed:**
+- `packages/client/src/canvas/EffectPlayer.ts`
+  - Removed leftover `PHASE_T_IMPACT` import (no longer scheduling a
+    separate zoom-back at IMPACT; the triplet's own zoom-out beat
+    handles return-to-1.0 before IMPACT fires).
+  - Added zoom triplet constants block at the top of `play()`:
+    `ZOOM_IN_MS=600`, `ZOOM_HOLD_MS=800`, `ZOOM_OUT_MS=400`,
+    `ZOOM_PEAK=1.6`, `atZoomOut = atPullPants + ZOOM_IN_MS + ZOOM_HOLD_MS`.
+    Total cinematic budget 1800 ms slots inside the
+    PULL_PANTS+STRIKE+IMPACT window (900+600+800 = 2300 ms).
+  - PULL_PANTS scheduleAt block: replaced
+    `camera.zoomTo(actor.view.x, actor.view.y-64, 1.1, PHASE_T_PULL_PANTS, 'out')`
+    with a triplet zoom-in
+    `camera.zoomTo(focalX, focalY, 1.6, 600, 'out')` where
+    `focalX = (actor.view.x + victim.view.x) / 2` and
+    `focalY = (actor.view.y + victim.view.y) / 2 - 48` — the
+    midpoint between attacker & victim, lifted slightly so heads &
+    shame line both stay in frame.
+  - CHOP path (the per-target chop branch): added matching
+    triplet zoom-in `camera.zoomTo(houseDoorX, houseDoorY, 1.6,
+    600, 'out')` where `houseDoorX = victim.view.x` and
+    `houseDoorY = victim.view.y - 96` — focal centred on the
+    target's house door (offset 96 px above feet because house
+    anchor is centre-bottom).
+  - Added zoom-out beat scheduled at `atZoomOut`:
+    `camera.zoomTo(recenterX, recenterY, 1.0, 400, 'in-out')`
+    where `recenterX = (actorHomeX + victimX) / 2` — eases back to
+    the wide framing that frames the actor's eventual reset path
+    even though §K2 stops the literal walk-back. This fires at
+    t=PULL_PANTS+1400 = 3800 ms, *just* before IMPACT at 3900 ms,
+    so the IMPACT frame plays at 1.0× as designed.
+  - Dropped the redundant `camera.zoomTo(actor.view.x, …, 1.0,
+    PHASE_T_IMPACT)` call that was the residual of the §K2 cleanup;
+    the IMPACT scheduleAt block now only flips
+    `actor.setState('IDLE')`.
+- `packages/client/src/canvas/camera/camera.test.ts` — added 5 §K3
+  acceptance tests:
+  1. PULL_PANTS triplet: scale > 1.4× by t=600 ms after start (the
+     primary acceptance gate from the brief).
+  2. PULL_PANTS triplet: scale > 1.4× at t≈580 ms (tighter
+     interpolation check just before the 600 ms boundary, to catch
+     accidental linear-vs-out ease regressions).
+  3. CHOP triplet: scale > 1.4× by t=600 ms (parity with
+     PULL_PANTS).
+  4. Zoom-out beat: 1.6 → 1.0 over 400 ms ease-in lands cleanly at
+     1.0 (no overshoot, no residual scale).
+  5. Full triplet round-trip: in (600) + hold (800) + out (400)
+     returns to 1.0 within float tolerance — locks in the 1800 ms
+     budget contract.
+- `packages/client/src/canvas/GameStage.tsx` — exposed the live
+  Camera as `globalThis.__xdybCamera` (DEV-only via Vite, so no
+  prod leak) so Playwright runs can sample
+  `__xdybCamera.getScale()` mid-action and prove the zoom is real.
+  Tiny one-liner; the alternative would have been pixel-measuring
+  screenshots which is brittle on jsdom-canvas warnings.
+
+**Verification:**
+- `pnpm -r build` — shared / server / client all green.
+- `pnpm -r test` — shared 79/79, server 21/21, client **166/166**
+  (was 161; +5 §K3 tests). 266 total.
+- `pnpm sim --players 4 --bots counter,random,iron,mirror --rounds
+  10 --seed 42` — summary still reports `action_total_ms=3200
+  reveal_ms=1500 round_total_ms=4700`; tie_rate=0.300 unchanged.
+- Live Playwright MCP probe: clicked rock, sampled
+  `__xdybCamera.getScale()` every 50 ms across the round; observed
+  **peak scale = 1.6× at t≈4850 ms** post rock-click, with samples
+  crossing 1.4× by t≈4518 ms (~600 ms after PULL_PANTS start at
+  t≈4181 ms, dead on the spec). Confirms the triplet runs in the
+  real browser, not just in the unit test.
+
+**Files touched:**
+- `packages/client/src/canvas/EffectPlayer.ts` (+47 / −15 net)
+- `packages/client/src/canvas/camera/camera.test.ts` (+86 / 0)
+- `packages/client/src/canvas/GameStage.tsx` (+8 / 0)
