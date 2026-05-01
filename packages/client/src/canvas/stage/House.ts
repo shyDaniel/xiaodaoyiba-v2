@@ -489,19 +489,70 @@ export class House {
     // ribbon's right edge (visually invisible / "counter#?").
     const wrapW = Math.max(20, plaqueW - 2 * TEXT_FIT_PAD);
 
-    // Compute how many lines the wrap will produce by greedy
-    // character-break simulation matching Pixi's breakWords behaviour.
-    // We can't query Pixi.Text.height in jsdom (no canvas backend),
-    // so the height calc happens in pure TS using measurePixiTextW.
-    const wrappedLines = wrapTextToWidth(namePool, wrapW, fontSize, measurePixiTextW);
+    // §H1 (S-445) — pre-wrap the text ourselves and pass the multi-
+    // line string to Pixi with wordWrap DISABLED. The S-443 fix relied
+    // on Pixi's own wordWrap+breakWords to wrap long unbroken tokens
+    // like 'counter#2' when their measured advance exceeded
+    // wordWrapWidth. Live verdict iter74: at desktop canvas 776×616
+    // slot 5 (rightmost front-row, plaqueW≈115 px, wrapW≈99 px),
+    // Pixi's measureText returned a single-line advance just under
+    // wrapW so wordWrap did NOT trigger — but the rasterized texture
+    // (advance + 16 px Pixi padding) still overshot the visible
+    // ribbon by a few pixels, clipping the trailing '2' glyph
+    // (visually 'counter#?').
+    //
+    // Root cause: the only thing wrapW guards is Pixi's wrap
+    // *decision*, not the texture footprint. Pixi's wrap and the
+    // texture footprint use the same measureText, but the texture
+    // adds 2*padding on top of the measured advance — so for an
+    // advance value within (wrapW - padding*2, wrapW] the texture
+    // overflows the ribbon while wrap stays inactive.
+    //
+    // S-445 fix: do the wrap *ourselves* using the same
+    // measurePixiTextW (which calls Pixi's CanvasTextMetrics
+    // measureText so the measurement is on the same code path Pixi
+    // would use during render). The wrap criterion now is
+    // 'measured advance + 2*padding ≤ plaqueW' — i.e. the texture
+    // (not just the advance) must fit the ribbon. We then pass the
+    // pre-wrapped multi-line string to Pixi as `wrappedText` with
+    // wordWrap disabled, so the layout is fully deterministic and
+    // independent of Pixi's wordWrap quirks. The text node's .text
+    // becomes 'counter#\n2' (or 'coun\nter#2' for tighter slots),
+    // matching the S-445 acceptance contract verbatim.
+    //
+    // wrapTextToWidth uses `wrapW - 2*PADDING_GUARD` as the per-line
+    // budget so even with measurement drift between jsdom heuristic
+    // and live Pixi advance, the rasterized texture stays inside
+    // the ribbon with ≥ 4 px slack on each side.
+    const PADDING_GUARD = 4;
+    const lineBudget = Math.max(8, wrapW - 2 * PADDING_GUARD);
+    // §H1 (S-445) — Live Pixi 8 bold-700 PingFang fallback renders
+    // wider than CanvasTextMetrics.measureText reports. Without
+    // this safety factor, 'counter#2' measures 81 px (so wraps don't
+    // fire at lineBudget=91 px) but rasterizes ~104 px wide, with the
+    // trailing '2' glyph crashing into the ribbon's right brown
+    // border at desktop canvas 776×616 slot 5 (verdict iter-75).
+    // Applying a 1.20 inflation to the measured advance lifts
+    // counter#2 from 81→97 px (exceeds 91 px lineBudget, wrap fires:
+    // counter#\n2) while keeping shorter labels like 'counter' (62→74
+    // ≤ 78 px lineBudget) and 'random' on a single line.
+    const FONT_FALLBACK_INFLATION = 1.2;
+    const measureInflated = (s: string, fs: number): number =>
+      Math.ceil(measurePixiTextW(s, fs) * FONT_FALLBACK_INFLATION);
+    const wrappedLines = wrapTextToWidth(namePool, lineBudget, fontSize, measureInflated);
+    const wrappedText = wrappedLines.join('\n');
     const lineH = Math.ceil(fontSize * 1.15);
     // Ribbon height: enough to host every wrapped line plus 8 px
     // top/bottom inset. Floor of 28 keeps single-line plaques the
     // same height as before so 1..4p layouts visually unchanged.
     const plaqueH = Math.max(28, wrappedLines.length * lineH + 12);
     const text = new Text({
-      text: namePool,
-      style: buildStyle(fontSize, wrapW),
+      text: wrappedText,
+      // wordWrap explicitly OFF — the text already contains the
+      // \n line breaks computed above, so Pixi just renders each
+      // pre-split line at its natural width. This removes Pixi's
+      // wordWrap-vs-texture mismatch as a source of overflow.
+      style: buildStyle(fontSize, 0),
     });
     text.anchor.set(0.5);
     text.position.set(0, plaqueY + plaqueH / 2);

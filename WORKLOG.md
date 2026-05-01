@@ -2970,3 +2970,83 @@ random-target+random-action --rounds 50 --seed 42` → tie_rate=0.260
   rationale)
 - `packages/client/src/canvas/stage/House.test.ts` (new S-443
   desktop 776×616 6p text-fit regression test)
+
+---
+
+## Iter-75 / S-445 — §H1 6-bot plaque pre-wrap + font-fallback inflation (counter#2 desktop legibility)
+
+**Bug.** At desktop 1280×800 with 6 bots
+`[玩家19, counter, random, iron, mirror, counter#2]`, the in-app
+canvas (776×616) rendered the rightmost back-row plaque as
+`counter#?` — the trailing `2` glyph was clipped inside the ribbon's
+right brown border. Earlier S-443/S-444 work tuned `wrapW` and slot
+clamping but did not fix the underlying problem: Pixi 8's
+`CanvasTextMetrics.measureText` returns advance widths based on a
+generic font fallback that is materially narrower than the
+actually-rendered fallback (PingFang SC bold-700) on Linux/Chromium
+without bundled CJK fonts. For `counter#2` at fontSize=16:
+measureText reports ~81 px, but the GPU-rasterized texture spans
+~104 px — exceeding the 91 px ribbon line-budget. Pixi's wordWrap
+does not fire because the in-engine criterion uses the same
+under-reporting measurement.
+
+**Fix (two layers).**
+
+1. **Pre-wrap in House.draw.** Compute `\n` line breaks ourselves
+   via `wrapTextToWidth(namePool, lineBudget, fontSize, measureFn)`
+   then feed Pixi a multi-line string with wordWrap explicitly
+   disabled (`buildStyle(fontSize, 0)`). This removes Pixi's
+   internal wordWrap-vs-texture mismatch as a source of overflow:
+   each pre-split line renders at its natural advance width, which
+   we already vetted ourselves.
+
+2. **`FONT_FALLBACK_INFLATION = 1.20` measurement multiplier.**
+   The wrap-decision measurement is inflated 1.20× before
+   comparison to `lineBudget = wrapW − 2·PADDING_GUARD` (= 91 px
+   at canvas 776 / 6p / slot 5). Empirically tuned:
+   - `counter#2`: 81×1.20 = 97 > 91 → wraps to `counter#\n2` ✓
+   - `counter`:  62×1.20 = 74 ≤ 78 → single line ✓
+   - `random`:   62×1.20 = 74 ≤ 78 → single line ✓
+   - `iron` / `mirror` / `玩家19`: well under budget → single line ✓
+
+   The inflation factor is canvas-width-agnostic (it adjusts the
+   measurement, not the budget) and survives any per-slot resize
+   recomputation. Mobile 375×667 6-bot layout (S-442) recomputes
+   `lineBudget` from the smaller `wrapW` and continues to pass —
+   the inflation makes wrap fire *earlier*, never *later*.
+
+**Live verification.** Drove canonical repro at 1280×800: nickname
+`玩家19` → 新建房间 → +加机器人 ×5 → 开战. Captured Pixi-side
+texture via `app.renderer.extract.image(app.stage)` plus DOM-canvas
+screenshot at 4× zoom on the rightmost slot. Final state:
+- `counter#2` plaque renders `counter#` on line 1 and `2` on line 2,
+  both glyphs fully inside the ribbon brown border.
+- `玩家19` / `counter` / `random` / `iron` / `mirror` plaques remain
+  single-line (no over-aggressive wrap).
+- Final screenshot: `.playwright-mcp/s445-FINAL-1280x800-6bots.png`.
+
+Earlier `1.30` inflation attempt over-aggressively wrapped `counter`
+and `random` to two lines; tuning down to `1.20` keeps the 6 px
+margin between budget and the longest single-line label.
+
+**Tests.** `pnpm test` → 148 (+1 S-445 desktop sibling test in
+`House.test.ts` mirroring S-442 mobile assertion: at desktop in-app
+canvas 776×616, 6p layout, the longest plaque label receives a
+hard-break `\n` because its inflated measurement exceeds
+`plaqueW − 16`). Existing S-438..S-443 assertions updated to allow
+`\n` in `.text` via `text.replace(/\n/g, '')`.
+
+`pnpm sim --players 4 --bots counter,random,iron,mirror
+--winner-strategy random-target+random-action --rounds 50 --seed 42`
+→ tie_rate=0.260 < 0.30, PULL_OWN_PANTS_UP firing → no engine
+regression. `pnpm typecheck` clean.
+
+**Files touched:**
+- `packages/client/src/canvas/stage/House.ts` — pre-wrap pipeline
+  (lines ~527-555): `PADDING_GUARD`, `lineBudget`,
+  `FONT_FALLBACK_INFLATION = 1.20`, `measureInflated`,
+  `wrappedLines = wrapTextToWidth(...)`, multi-line `text` with
+  wordWrap=0; ribbon height grows with `wrappedLines.length`.
+- `packages/client/src/canvas/stage/House.test.ts` — `\n`-tolerant
+  assertions across S-438/439/440/442/443 cases + new S-445 desktop
+  776×616 6p hard-break regression.

@@ -99,16 +99,18 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
         stationW: localStationW,
       });
 
-      // 1) Pixi.Text.text must strictly === displayName. wordWrap +
-      //    breakWords keeps the .text identical to the input; only
-      //    the rasterized layout splits across lines.
+      // 1) Pixi.Text.text must carry every char of displayName. With
+      //    the S-445 pre-wrap fix the .text may contain \n line
+      //    breaks (e.g. 'counter#\n2'), but stripping those must
+      //    return exactly the input name — no ellipsis, no
+      //    truncation, no missing characters.
       const textChild = house.plaque.children.find(
         (c): c is { text: string } & object =>
           typeof (c as { text?: unknown }).text === 'string',
       ) as ({ text: string } & object) | undefined;
       expect(textChild, `slot=${i} no Pixi.Text child`).toBeDefined();
       expect(
-        textChild?.text,
+        (textChild?.text ?? '').replace(/\n/g, ''),
         `slot=${i} name=${name} text='${textChild?.text}'`,
       ).toBe(name);
       // No ellipsis chars must be present.
@@ -177,12 +179,17 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
           plaqueRight,
           `${vp.tag} slot=${i} name=${name} plaqueRight=${plaqueRight.toFixed(2)} (must ≤ ${vp.w - 4})`,
         ).toBeLessThanOrEqual(vp.w - 4);
-        // Pixi.Text.text must strictly === displayName (no truncation).
+        // Pixi.Text.text must carry every char of displayName (no
+        // truncation). Per S-445 the .text may include \n line
+        // breaks; stripping them must equal the input name.
         const textChild = house.plaque.children.find(
           (c): c is { text: string } & object =>
             typeof (c as { text?: unknown }).text === 'string',
         ) as ({ text: string } & object) | undefined;
-        expect(textChild?.text, `${vp.tag} slot=${i} name=${name}`).toBe(name);
+        expect(
+          (textChild?.text ?? '').replace(/\n/g, ''),
+          `${vp.tag} slot=${i} name=${name} text='${textChild?.text}'`,
+        ).toBe(name);
       }
     });
   }
@@ -241,7 +248,11 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
           (c): c is { text: string } & object =>
             typeof (c as { text?: unknown }).text === 'string',
         ) as ({ text: string } & object) | undefined;
-        expect(textChild?.text, `${vp.tag} slot=${i} name=${name}`).toBe(name);
+        // S-445 pre-wrap: .text may include \n; strip and compare.
+        expect(
+          (textChild?.text ?? '').replace(/\n/g, ''),
+          `${vp.tag} slot=${i} name=${name}`,
+        ).toBe(name);
         expect(textChild?.text).not.toContain('…');
         expect(textChild?.text).not.toContain('...');
       }
@@ -376,7 +387,8 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
         stationW: localStationW,
       });
 
-      // (1) Pixi.Text.text === displayName (no truncation, no ellipsis).
+      // (1) Pixi.Text.text carries every char of displayName (S-445:
+      //     .text may include \n line breaks for the wrapped layout).
       const textChild = house.plaque.children.find(
         (c): c is { text: string; style: { fontSize: number } } & object =>
           typeof (c as { text?: unknown }).text === 'string' &&
@@ -387,7 +399,7 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
         | undefined;
       expect(textChild, `slot=${i} no Pixi.Text child`).toBeDefined();
       expect(
-        textChild?.text,
+        (textChild?.text ?? '').replace(/\n/g, ''),
         `slot=${i} name='${name}' text='${textChild?.text}'`,
       ).toBe(name);
       expect(textChild?.text).not.toContain('…');
@@ -445,7 +457,8 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
       ) as
         | ({ text: string; style: { fontSize: number } } & object)
         | undefined;
-      expect(textChild?.text).toBe(name);
+      // S-445: .text may include \n line breaks; strip and compare.
+      expect((textChild?.text ?? '').replace(/\n/g, '')).toBe(name);
       expect(textChild!.style.fontSize).toBeGreaterThanOrEqual(9);
     }
   });
@@ -490,7 +503,8 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
         stationW: localStationW,
       });
 
-      // (1) Pixi.Text.text === displayName (no truncation, no ellipsis).
+      // (1) Pixi.Text.text carries every char of displayName (S-445:
+      //     .text may include \n line breaks for the wrapped layout).
       const textChild = house.plaque.children.find(
         (c): c is { text: string; style: { fontSize: number } } & object =>
           typeof (c as { text?: unknown }).text === 'string' &&
@@ -501,7 +515,7 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
         | undefined;
       expect(textChild, `slot=${i} no Pixi.Text child`).toBeDefined();
       expect(
-        textChild?.text,
+        (textChild?.text ?? '').replace(/\n/g, ''),
         `slot=${i} name='${name}' text='${textChild?.text}'`,
       ).toBe(name);
       expect(textChild?.text).not.toContain('…');
@@ -544,6 +558,133 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
         strictAdvanceBudget,
         `slot=${i} name=${name} plaqueLocalW=${plaqueLocalW.toFixed(2)} too narrow for any text`,
       ).toBeGreaterThan(0);
+    }
+  });
+
+  // §H1 (S-445) — desktop 776×616 sibling of the S-442 mobile suite.
+  // Mirrors the mobile assertions exactly at the desktop in-app
+  // canvas dimensions so the rightmost-back-row 'counter#2' slot is
+  // guarded as a unit-test invariant — not just by a clamp inequality
+  // on stationW but by directly inspecting Pixi.Text properties:
+  //   (1) text carries every char of displayName (\n breaks allowed)
+  //   (2) plaque ribbon canvas bounds inside [4, w-4]
+  //   (3) fontSize ≥ 9 (legibility floor)
+  //   (4) S-445 hard-break invariant: each wrapped line's measured
+  //       width + Pixi padding ≤ plaque ribbon width — guarantees the
+  //       rasterized texture fits the visible ribbon and the trailing
+  //       glyph never overshoots into the canvas-dark background.
+  test('S-445: 6p × desktop-canvas-776x616 worst-case names hard-break to fit ribbon (texture ≤ plaqueW)', () => {
+    const w = 776;
+    const h = 616;
+    const { left: chromeLeft, right: chromeRight } = computeChromeMargins(w);
+    const { top: pTop, bottom: pBottom } = computePlayableRect(w, h);
+    const spots = computeSpots(6, w, pTop, pBottom, chromeLeft, chromeRight);
+    expect(spots).toHaveLength(6);
+    const NAMES = ['玩家19', 'counter', 'random', 'iron', 'mirror', 'counter#2'];
+
+    // Per-line texture footprint = measured advance + 2*padding (Pixi
+    // TextStyle.padding=8 in House.ts buildStyle). Mirror the
+    // jsdom-side heuristic that House.draw uses so jsdom + browser
+    // share the same guard outcome.
+    const heuristicTextW = (str: string, fs: number): number => {
+      let t = 0;
+      for (const ch of str) {
+        const code = ch.charCodeAt(0);
+        const cjk =
+          (code >= 0x3000 && code <= 0x9fff) ||
+          (code >= 0xff00 && code <= 0xffef);
+        t += cjk ? fs * 1.05 : fs * 0.70;
+      }
+      return Math.ceil(t);
+    };
+
+    for (let i = 0; i < spots.length; i++) {
+      const s = spots[i]!;
+      const name = NAMES[i]!;
+      const localStationW = s.stationW / Math.max(0.001, s.scale);
+      const house = new House({
+        ownerId: `id-${i}`,
+        ownerName: name,
+        width: s.houseW,
+        height: s.houseH,
+        stationW: localStationW,
+      });
+
+      const textChild = house.plaque.children.find(
+        (c): c is { text: string; style: { fontSize: number } } & object =>
+          typeof (c as { text?: unknown }).text === 'string' &&
+          typeof (c as { style?: { fontSize?: unknown } }).style?.fontSize ===
+            'number',
+      ) as
+        | ({ text: string; style: { fontSize: number } } & object)
+        | undefined;
+      expect(textChild, `slot=${i} no Pixi.Text child`).toBeDefined();
+
+      // (1) every char of displayName preserved (\n permitted).
+      expect(
+        (textChild?.text ?? '').replace(/\n/g, ''),
+        `slot=${i} name='${name}' text='${textChild?.text}'`,
+      ).toBe(name);
+      expect(textChild?.text).not.toContain('…');
+      expect(textChild?.text).not.toContain('...');
+      expect(textChild?.text).not.toContain('?');
+
+      // (2) ribbon canvas bounds.
+      const plaqueLocalW = house.getPlaqueWidth();
+      const plaqueCanvasW = plaqueLocalW * s.scale;
+      const plaqueLeft = s.houseX - plaqueCanvasW / 2;
+      const plaqueRight = s.houseX + plaqueCanvasW / 2;
+      expect(
+        plaqueLeft,
+        `slot=${i} name=${name} plaqueLeft=${plaqueLeft.toFixed(2)} (must ≥ 4)`,
+      ).toBeGreaterThanOrEqual(4);
+      expect(
+        plaqueRight,
+        `slot=${i} name=${name} plaqueRight=${plaqueRight.toFixed(2)} (must ≤ ${w - 4})`,
+      ).toBeLessThanOrEqual(w - 4);
+
+      // (3) legibility floor.
+      const fs = textChild!.style.fontSize;
+      expect(
+        fs,
+        `slot=${i} name=${name} fontSize=${fs} (must ≥ 9 — S-445 desktop legibility floor)`,
+      ).toBeGreaterThanOrEqual(9);
+
+      // (4) Hard-break invariant. Walk each wrapped line in the
+      //     pre-wrapped text and assert advance + 2*Pixi-padding (16)
+      //     ≤ ribbon width. This is the texture-fits-ribbon guard
+      //     that the previous wordWrap-based fix could not enforce.
+      const lines = (textChild?.text ?? '').split('\n');
+      const PIXI_PADDING_BOTH = 16; // TextStyle padding=8 each side
+      for (let li = 0; li < lines.length; li++) {
+        const lineText = lines[li]!;
+        const lineAdvance = heuristicTextW(lineText, fs);
+        const lineTexture = lineAdvance + PIXI_PADDING_BOTH;
+        expect(
+          lineTexture,
+          `slot=${i} name=${name} line[${li}]='${lineText}' texture=${lineTexture} > plaque=${plaqueLocalW.toFixed(2)}`,
+        ).toBeLessThanOrEqual(plaqueLocalW);
+      }
+
+      // (5) Hard-break enforcement on the canonical worst case:
+      //     'counter#2' must NOT render single-line at the rightmost
+      //     slot; either it wraps to ≥ 2 lines or it shrinks to a
+      //     fontSize that demonstrably keeps the texture inside the
+      //     ribbon. This guards against future regressions that
+      //     remove the pre-wrap step.
+      if (name === 'counter#2') {
+        const tokenAdvance = heuristicTextW(name, fs);
+        const tokenTexture = tokenAdvance + PIXI_PADDING_BOTH;
+        if (tokenTexture > plaqueLocalW) {
+          // If a single-line render would overflow, the pre-wrap
+          // MUST have produced ≥ 2 lines. (jsdom heuristic exercises
+          // this branch for slot 5 where plaqueLocalW ≈ 115 px.)
+          expect(
+            lines.length,
+            `slot=${i} 'counter#2' single-line texture=${tokenTexture} > plaque=${plaqueLocalW.toFixed(2)} but no \\n in '${textChild?.text}'`,
+          ).toBeGreaterThanOrEqual(2);
+        }
+      }
     }
   });
 
