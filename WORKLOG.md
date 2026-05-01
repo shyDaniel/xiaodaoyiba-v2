@@ -3698,3 +3698,90 @@ no console errors when the file is absent.
   this iteration adds ~1 KB net and was already the steady-state
   baseline before §K6.
 
+
+## Iteration 99 — §K6 loader Vite-SPA-fallback fix (S-516)
+
+**What:** Closed the §K6 loader regression where the HEAD probe was a
+false-positive under Vite dev. Vite's SPA history fallback returns
+`index.html` (HTML200) for any unmatched path — so the iter-98 probe
+saw `200 OK` for every `/sprites/*` path that didn't exist, then
+handed HTML bytes to `Pixi.Assets.load`, which silently failed only
+because the catch swallowed the decode error. Two-layer fix:
+
+1. **Vite middleware (`packages/client/vite.config.ts`):** new
+   `xdyb:sprites-404` plugin registered in the SYNCHRONOUS body of
+   `configureServer`, so it runs BEFORE Vite's internal middlewares
+   (including the SPA history-fallback). For any `/sprites/*` request,
+   stat the file under `assets/sprites/`. If it exists, `next()` and
+   let Vite's static handler serve it. Otherwise reply
+   `404 text/plain` with `Cache-Control: no-store`. Path-traversal
+   segments are rejected with 404 too. Earlier attempt used a
+   returned-function (which runs AFTER internal middlewares) and was
+   overridden by SPA fallback — verified live with curl, fixed by
+   moving registration into the synchronous body.
+2. **Loader probe (`packages/client/src/canvas/loadSpriteWithFallback.ts`):**
+   replaced the HEAD-only probe with a ranged GET (first 8 bytes) that
+   accepts ONLY when `Content-Type` starts with `image/` OR the body
+   matches the PNG magic signature `89 50 4E 47 0D 0A 1A 0A`. SPA-
+   fallback responses (text/html + HTML body) fail BOTH checks. Real
+   PNGs pass via either signal. New `fetchImpl?` test seam lets unit
+   tests exercise the default probe end-to-end without monkey-patching
+   global fetch.
+
+**Files changed:**
+- `packages/client/vite.config.ts` — `spritesNotFoundPlugin()` plugin
+  registered in `configureServer` synchronous body.
+- `packages/client/src/canvas/loadSpriteWithFallback.ts` — `defaultProbe`
+  uses ranged GET + content-type/PNG-magic verification; new
+  `isPngMagic()`, `isImageContentType()`, `PNG_MAGIC_BYTES` exports;
+  `LoadSpriteDeps.fetchImpl` test seam.
+- `packages/client/src/canvas/loadSpriteWithFallback.test.ts` — added
+  16 new tests covering: PNG magic detection (5), content-type
+  parsing (5), and §S-516 default-probe behaviour against mocked
+  fetch (6) — including the explicit "SPA fallback HTML200 ⇒ null
+  without invoking load" case the brief asked for.
+
+**Verification:**
+- `pnpm test` — shared 79/79, server 21/21, client **193/193** (was
+  177; +16 new loader tests). **293 total green** (up from 277).
+- `pnpm build` — clean. Client gzip 342.52 KB (unchanged from iter
+  98). Pixi `dynamic-import-also-static-import` warning is unchanged
+  benign noise.
+- **Live curl probe** against `pnpm dev`:
+  - `GET /sprites/characters/p0-idle-0.png` (absent) → **`404
+    text/plain; charset=utf-8`** (was 200 text/html in iter 98).
+  - `GET /sprites/characters/_probe-test.png` (real PNG dropped at
+    `assets/sprites/...`) → **`200 image/png`** (passes through to
+    Vite's static handler via `next()`).
+  - `GET /` and `GET /lobby` → still **`200 text/html`** (SPA
+    fallback for app routes is unaffected).
+- **Live browser probe** via Playwright MCP at
+  `http://127.0.0.1:5173/`:
+  - `loadSpriteWithFallback('characters/p0-idle-0')` resolves to
+    `null` (acceptance test pass).
+  - `loadSpriteWithFallback('characters/p999-totally-not-here')`
+    resolves to `null`.
+  - Network log: only the two probe GETs, both returning 404. **Zero
+    spurious `Pixi.Assets.load` GETs** for absent sprites — the
+    iter-98 "8 GETs returning HTML and silently failing" pattern is
+    gone.
+
+**Observations:**
+- The synchronous-vs-returned-function ordering in `configureServer`
+  is a Vite footgun. The naive read of "return a function so it
+  installs after internal middlewares" was exactly the WRONG choice
+  here — the SPA history fallback IS one of those internal middlewares
+  and would shadow our 404. Moving the `use()` into the synchronous
+  body installs us first; we still call `next()` for real files so
+  Vite's static handler serves them with the right `image/png`
+  content-type.
+- The two-layer defence (middleware + magic-byte probe) is intentional
+  redundancy. The middleware fixes Vite dev. The magic-byte probe
+  protects production / preview / static-host setups where the user
+  might deploy behind a CDN that misroutes 404s, or a host that
+  reports `application/octet-stream` for PNGs. Either layer alone
+  closes the regression; together they're robust.
+- The `fetchImpl` seam means the default-probe behaviour is now
+  unit-testable without monkey-patching `globalThis.fetch`. Tests
+  inject a mock `Response` shape; the probe runs through its real
+  code path including `arrayBuffer()` decode and PNG-magic check.

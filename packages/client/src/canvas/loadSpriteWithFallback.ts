@@ -5,7 +5,7 @@
 //     → resolves to a Pixi Texture if `/sprites/<name>.png` is reachable AND
 //       loads as a valid image
 //     → resolves to `null` if the asset is missing (404 / network error / not
-//       a valid image)
+//       a valid PNG)
 //
 // The caller (Character.ts / House.ts) treats `null` as "no override; keep
 // the procedural rig". A non-null Texture is wrapped in a Sprite with the
@@ -20,16 +20,37 @@
 // folder (see vite.config.ts) so a file at `assets/sprites/characters/p0-
 // idle-0.png` is served at `/sprites/characters/p0-idle-0.png`.
 //
-// Implementation notes:
-// - We HEAD-probe the URL first. If the response is non-2xx (404 most
-//   commonly), we return null without invoking Pixi's Assets.load — this
-//   avoids a noisy console error from Pixi when the file is absent.
-// - On 2xx, we call Pixi's `Assets.load(url)` which returns a Texture.
-//   Pixi caches by URL, so calling loadSpriteWithFallback for the same name
-//   twice is cheap.
-// - In environments without `fetch` (server-side import for tests), the
-//   probe degrades to checking the injected `fetcher` argument. The unit
-//   test injects mocks for both branches.
+// === Why a HEAD probe is not sufficient (§S-516 root cause) ===
+//
+// Vite's dev server applies an SPA history fallback: any GET that is not
+// for a known static asset returns `index.html` with status 200. That means
+// a HEAD on `/sprites/foo.png` for a NON-EXISTENT file ALSO returns 200,
+// because Vite happily falls through to the SPA index. The §K6 contract
+// "404 → null without invoking Pixi" is therefore unreachable in dev under
+// a naive HEAD probe — the loader thinks every sprite name exists and
+// always defers to Pixi's Assets.load, which then receives HTML bytes,
+// fails to decode, and silently returns null only because we swallow the
+// decode error in defaultLoad's catch.
+//
+// To make the contract real, defaultProbe issues a TINY ranged GET (the
+// first 8 bytes) and checks two signals:
+//
+//   1. The Content-Type header MUST start with `image/`. HTML SPA fallback
+//      sends `text/html`, which we reject.
+//   2. The first 8 bytes MUST be the PNG magic signature
+//      (89 50 4E 47 0D 0A 1A 0A). This catches servers that strip /
+//      misreport content-type but still SPA-fallback the body.
+//
+// Either signal failing → probe returns false → loader returns null and
+// Pixi.Assets.load is NEVER invoked for the missing path. This eliminates
+// the spurious GETs and silent decode-failures observed in the live
+// network log this iteration.
+//
+// In addition, vite.config.ts now installs a dev-server middleware that
+// returns a real 404 for any unresolved `/sprites/*` path BEFORE the SPA
+// fallback fires, so even the ranged GET sees a clean 404. Both layers
+// matter: the middleware fixes dev, the magic-byte check fixes any
+// production / preview / static-host setup that happens to misbehave.
 //
 // API is deliberately small — one function, one Promise. State lives in
 // Pixi's Assets cache, NOT in this module.
@@ -44,12 +65,16 @@ export type SpriteOverride = Texture | null;
  *  HTTP server or a real PixiJS Application. Production code calls with
  *  no arguments and the global `fetch` + Pixi's `Assets.load` are used. */
 export interface LoadSpriteDeps {
-  /** Probe the URL with HEAD (or GET fallback). Should return `true` iff
-   *  the resource exists and responds with 2xx. */
+  /** Probe the URL. Should return `true` iff the resource exists, responds
+   *  with 2xx, AND looks like a real image (Content-Type image/* OR PNG
+   *  magic bytes). HTML SPA-fallback responses MUST return false. */
   probe?: (url: string) => Promise<boolean>;
   /** Load the texture by URL. Should reject (or return null) if the bytes
    *  are not a valid image. */
   load?: (url: string) => Promise<Texture | null>;
+  /** Test seam: inject a custom fetch implementation for defaultProbe.
+   *  Production passes the global `fetch`. */
+  fetchImpl?: typeof fetch;
 }
 
 /** Default URL prefix. Matches Vite's `publicDir = '../../assets'` so a
@@ -57,6 +82,9 @@ export interface LoadSpriteDeps {
  *  `/sprites/characters/p0-idle-0.png`. Exposed for tests + for tooling
  *  (gen-sprites.mjs uses the same prefix when it dumps reference PNGs). */
 export const SPRITE_URL_PREFIX = '/sprites/';
+
+/** PNG magic-byte signature. The first 8 bytes of every valid PNG file. */
+export const PNG_MAGIC_BYTES = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] as const;
 
 /** Compose the served URL for a given logical sprite name. The name is the
  *  path under `assets/sprites/`, with or without `.png` extension. */
@@ -66,22 +94,61 @@ export function spriteUrl(name: string): string {
   return `${SPRITE_URL_PREFIX}${withExt}`;
 }
 
-/** Default HEAD probe using the global `fetch`. Returns false on any
- *  non-2xx OR network error — never throws. The point is to silently fall
- *  back to procedural sprites when the user hasn't supplied art. */
-async function defaultProbe(url: string): Promise<boolean> {
-  if (typeof fetch !== 'function') return false;
+/** True if the first N bytes of `buf` match the PNG magic signature. */
+export function isPngMagic(buf: ArrayBuffer | Uint8Array): boolean {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  if (bytes.length < PNG_MAGIC_BYTES.length) return false;
+  for (let i = 0; i < PNG_MAGIC_BYTES.length; i++) {
+    if (bytes[i] !== PNG_MAGIC_BYTES[i]) return false;
+  }
+  return true;
+}
+
+/** True if `contentType` denotes some flavor of image. Defensive: trims +
+ *  lower-cases + strips parameters (e.g. `image/png; charset=binary`). */
+export function isImageContentType(contentType: string | null | undefined): boolean {
+  if (!contentType) return false;
+  const head = contentType.split(';')[0]?.trim().toLowerCase() ?? '';
+  return head.startsWith('image/');
+}
+
+/** Default probe that survives Vite's SPA history fallback.
+ *
+ * Issues a ranged GET for the first 8 bytes. Returns true iff:
+ *   • the response is 2xx (200 or 206), AND
+ *   • either the Content-Type starts with `image/` OR the body's first 8
+ *     bytes are the PNG magic signature.
+ *
+ * SPA-fallback responses (status 200, content-type text/html, body
+ * starting with `<!doctype html>`) fail BOTH checks and resolve to false.
+ * Real PNGs (content-type image/png OR raw PNG bytes) pass. Network
+ * errors and non-2xx responses also resolve to false; this function
+ * never throws. */
+async function defaultProbe(
+  url: string,
+  fetchImpl: typeof fetch | undefined = typeof fetch === 'function' ? fetch : undefined,
+): Promise<boolean> {
+  if (!fetchImpl) return false;
   try {
-    // Many static-file servers (including Vite dev) handle HEAD correctly,
-    // but if HEAD is unsupported, we fall back to a ranged GET that only
-    // pulls 1 byte. Either way, a 404 produces a clean `false`.
-    const head = await fetch(url, { method: 'HEAD' });
-    if (head.ok) return true;
-    if (head.status === 405) {
-      const get = await fetch(url, { method: 'GET', headers: { Range: 'bytes=0-0' } });
-      return get.ok || get.status === 206;
-    }
-    return false;
+    // Ranged GET pulls the first 8 bytes. Many static servers honor Range
+    // and respond 206 with a 8-byte body; servers that ignore Range still
+    // return 200 with the full file (we only read the first 8 bytes).
+    const res = await fetchImpl(url, {
+      method: 'GET',
+      headers: { Range: `bytes=0-${PNG_MAGIC_BYTES.length - 1}` },
+    });
+    if (!res.ok && res.status !== 206) return false;
+
+    // Fast path: a trustworthy `image/*` content-type is enough. Vite dev
+    // serves real PNG files with `Content-Type: image/png`; the SPA
+    // fallback sends `Content-Type: text/html`.
+    if (isImageContentType(res.headers.get('content-type'))) return true;
+
+    // Slow path: read the bytes and verify the PNG magic signature.
+    // Defensive guard for response objects without arrayBuffer (test mocks).
+    if (typeof res.arrayBuffer !== 'function') return false;
+    const buf = await res.arrayBuffer();
+    return isPngMagic(buf);
   } catch {
     return false;
   }
@@ -107,7 +174,7 @@ export async function loadSpriteWithFallback(
   deps: LoadSpriteDeps = {},
 ): Promise<SpriteOverride> {
   const url = spriteUrl(name);
-  const probe = deps.probe ?? defaultProbe;
+  const probe = deps.probe ?? ((u: string) => defaultProbe(u, deps.fetchImpl));
   const load = deps.load ?? defaultLoad;
   const exists = await probe(url);
   if (!exists) return null;
