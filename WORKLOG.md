@@ -3204,3 +3204,34 @@ with a descriptive S-453 message.
 **Files touched:**
 - `packages/client/src/canvas/characters/Character.ts` — committed
   the iter-81 in-flight diff (+180/-54 lines).
+
+---
+
+## iter-84 — S-459 §K1 iso 45° ground projection
+
+Built the v6 §K1 iso projection on the ground plane. New module
+`packages/client/src/canvas/stage/iso.ts` exports the 2:1 dimetric
+transform (`isoMatrix`, `worldToScreen`, `screenToWorld`,
+`isoTilePoly`) at 30°/sin=0.5 — the canonical Hades / Stardew
+iso angle. `Ground.ts` now paints a 9×8 grid of parallelogram
+tiles via the projection: alternating three-tone fills, stroked
+edges, alpha-fading toward the horizon haze, plus a center
+"road" diamond stripe. Houses + characters stay upright sprite
+billboards on top — the modern Steam-indie 2.5D look (only the
+floor tilts so faces and nameplates remain readable).
+
+Unit-tested in `iso.test.ts` (10 cases: angle constants,
+matrix shape, basis-vector projections, vertical lift, vanishing
+point, screen-to-world round-trip, tile diamond orthogonality).
+
+Visually verified live on solo-init and mid-action screenshots:
+ground reads as iso parallelograms with vanishing point at top
+of playable rect; houses + characters undisturbed; HandPicker /
+BattleLog / persistent shame all unchanged. R1 played end-to-end.
+
+148 → 158 tests pass. Build green, client gzip 177.69 KB.
+
+**Files touched:**
+- `packages/client/src/canvas/stage/iso.ts` — new module
+- `packages/client/src/canvas/stage/iso.test.ts` — new tests
+- `packages/client/src/canvas/stage/Ground.ts` — iso tile grid
