@@ -587,3 +587,131 @@ The ship gate adds an explicit headless-distribution check: the sim's
 least once in a 50-round run, AND the target picker must be exercised
 by at least one winner that had ≥ 2 eligible targets. If either is
 missing, eval blocks regardless of judge.
+
+---
+
+## v6: 俯视 45° 半-3D + cinematic camera + winner-picker bug fix (2026-05-01 用户反馈 after playing v5)
+
+User played v5 ship. Verdict: "感觉不错了" — v5 is a real improvement. Five
+specific deltas remain, one of which is a regressed/inconsistent v5 feature.
+
+### §K. v6 hard acceptance criteria (additive to A-J)
+
+**§K1. Isometric / top-down 45° camera.** Stage transforms from current
+flat side-view to **top-down 45° / isometric projection**. Houses, ground
+tiles, and characters render in iso-coords (axes rotated 30°/60°, depth
+implied). Reference Steam-indie iso: **Hades, Don't Starve, Stardew
+Valley, Bastion, Habitica, Pyre**. Implementation hint: PixiJS supports
+this via container transform (skew + scale) or pre-projected sprites.
+The current parallax sky/mountains can stay as a flat backdrop layer
+behind the iso plane.
+
+**§K2. Stay at target's house — no return-home phase.** Current 5-phase
+timeline ends with `RETURN` (PHASE_T_RETURN = 800ms, actor walks back to
+own house). v6 **removes RETURN entirely**. Actor sprite remains at
+target's coords until the next round's PREP phase. Engine update:
+- `timing.ts` drops `PHASE_T_RETURN`. New `ACTION_TOTAL_MS` = 3200
+  (or keep 4000ms by extending IMPACT/result hold — pick whichever
+  feels better).
+- `engine.ts` removes the return-home effect emission.
+- Client: actor's PixiJS sprite parents to target's house container
+  during ACTION, stays parented until next PREP teleports back.
+- Headless sim's `phase=` column drops `return`; tests in
+  `engine.test.ts` updated.
+
+**§K3. Cinematic camera on PULL_PANTS and CHOP.** When the headline
+action moment hits (pants slide AND knife strike), the camera does a
+**zoom-pan-zoom**:
+- Pre-PULL_PANTS: camera scale 1.0 → **1.6x** over 600ms (ease-out),
+  focal point centered on the actor+target pair midpoint.
+- Hold at 1.6x for the duration of PULL_PANTS shame frame (≥ 800ms).
+- Post-IMPACT: scale 1.6x → 1.0 over 400ms (ease-in), focal recenters
+  on stage middle.
+- Total cinematic budget ≈ 1800ms over the existing PULL_PANTS+IMPACT
+  windows (no net duration increase — overlap with the pants animation).
+- For CHOP: same shape but focal on the target's house (the door takes
+  the hit, viewer sees the splinters at scale).
+- Implementation: extend `Camera.ts` with `zoomTo(scale, focalX, focalY,
+  durationMs, easing)`; `EffectPlayer.ts` dispatches it on PULL_PANTS
+  and CHOP effects.
+
+**§K4. BUG: winner-picker must ALWAYS surface when ≥ 2 eligible targets
+exist.** User reports inconsistent behavior — sometimes the picker
+appears, sometimes the game auto-picks. This is a v5 §H3 regression /
+race condition.
+- Repro: 3-player room (you + 2 bots), local human throws ROCK and wins
+  vs SCISSORS+SCISSORS. Both bots are losers with ALIVE_CLOTHED stage.
+  Per §H3, the picker MUST show with both bot houses tappable. Currently
+  it sometimes auto-resolves to bot[0] without prompting.
+- Likely cause: the picker is wired into the solo-game path but the
+  multiplayer (Socket.IO) flow takes a different code path that
+  fast-forwards. Investigate `Game.tsx` vs `MultiGame.tsx`.
+- Headless gate (the v5 §H5 meta-fix exists for exactly this): add a
+  test in the agency-aware sim that asserts when the human has ≥ 2
+  eligible targets, the per-round log row shows
+  `winner_picked_target=<one-of-eligible>`, NOT
+  `winner_picked_target=auto` or the engine's first-loser default.
+  If the sim shows the picker dispatching, but the live UI doesn't
+  surface it, that's a client wiring bug — not an engine bug.
+- Determinism test in client: Playwright drives 3-player room with
+  forced ROCK throw vs forced bot SCISSORS, asserts the picker dialog
+  is visible (`data-testid=winner-picker-target-dialog`) before any
+  auto-resolution timer fires.
+
+**§K5. Smaller scale to match the iso top-down feel.** Current characters
+are ≈ 128×128 native, houses ≈ 256×256. v6 reduces:
+- Character native ≈ **96×96** (smaller actors, world feels bigger).
+- House native ≈ **192×192**.
+- Stage zoom holds the camera so the player's house occupies ~20% of
+  viewport height (was ~30% in v5).
+- More breathing room for the iso projection — Steam-indie pacing.
+
+**§K6. Art asset hot-swap slot.** User will provide hand-drawn / AI-
+generated art later. Build the pipeline now:
+- `assets/sprites/characters/` and `assets/sprites/houses/` directories
+  with documented contract: PNG (sprite-sheet or single-frame), naming
+  convention `<role>-<state>-<frame>.png`, frame anchor at center
+  bottom (feet for characters, ground line for houses).
+- Loader: `loadSpriteWithFallback(name)` — prefers
+  `assets/sprites/<name>.png` if present, else falls back to
+  procedurally-generated sprite from `scripts/gen-sprites.mjs`.
+- Procedural sprites continue to ship as the default so the game is
+  playable without user-supplied art.
+- README documents how to drop in a new asset and have it appear.
+
+### §L. v6 verification
+
+```bash
+# Engine + timing
+pnpm test
+# → engine.test.ts has timeline test asserting RETURN phase removed,
+#   ACTION_TOTAL_MS = 3200 (or new value), actor stays at target.
+# → camera.test.ts has zoomTo() unit test (scale interpolation, easing).
+
+# Headless agency sim — winner-picker must surface
+pnpm sim --players 3 --bots iron,iron --rounds 50 --seed 42 \
+         --winner-strategy random-target+random-action
+# → at least one round shows winner_picked_target distinct from the
+#   engine's default first-loser; if all rounds show auto-pick, picker
+#   plumbing is broken upstream.
+
+# UI gate (eval drives picker reliability + iso projection)
+pnpm dev
+# → eval enters 3-player room, throws ROCK to force win vs scissors,
+#   confirms winner-picker dialog renders and waits for human input
+#   (does NOT auto-resolve in < 5s). Repeats 3x with different
+#   throws to confirm it's not a one-off race.
+# → eval screenshots the stage at landing and during action — confirms
+#   iso 45° projection (parallel ground lines converge to vanishing
+#   point at the top of the playable area), characters smaller than v5,
+#   houses smaller than v5.
+# → eval screenshots PULL_PANTS mid-frame — confirms camera scale > 1.0
+#   (zoom is active, not a flat 1.0 view).
+```
+
+### §M. v6 done = v5 acceptance still holds AND §K1-K6 verified
+
+The ship gate is **strictly additive** — every v5 acceptance must continue
+to pass (no regressions on layout, REVEAL phase, persistent shame, etc.).
+The §K4 bug fix is the highest priority — it's a working-feature regression,
+not a missing feature.
