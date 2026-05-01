@@ -1,7 +1,10 @@
 // House sprite. Roof + body + door + 2 windows + chimney + name plaque.
 // Per-house deterministic tinting via playerColor() (FINAL_GOAL §C9).
-// Drawn at native ≥ 256px so it reads as a 2024 indie sprite, not a 2010
-// HTML pixel-art prototype.
+// v6 §K5 (S-508): drawn at native ≈ 192 px so the player's own house
+// occupies ~18-22% of an 800-px viewport at 1280×800 / 4p — Steam-indie
+// pacing rather than the 2010 HTML pixel-art-prototype "boxes fill the
+// screen" feel. Geometry is iso-projected (front-LEFT primary face,
+// shorter receding front-RIGHT side, gable roof with iso-skewed ridge).
 
 import {
   CanvasTextMetrics,

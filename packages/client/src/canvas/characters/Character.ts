@@ -54,9 +54,22 @@ export interface CharacterOptions {
   nickname: string;
   /** Which way the character faces by default (`1` = right). */
   facing: 1 | -1;
-  /** Visual scale multiplier — 1.0 ≈ 128px. */
+  /** Visual scale multiplier — 1.0 ≈ 96px display height. v6 §K5 (S-508):
+   *  the internal art is drawn in a 128-unit-tall coord space (head at
+   *  y ≈ -128, feet at y = 0) for compatibility with the rich pre-existing
+   *  poly geometry; we scale the rendered view by NATIVE_DISPLAY_SCALE
+   *  (= 96/128 = 0.75) inside the constructor so external scale=1.0 maps
+   *  to a ~96-px-tall sprite on screen — Steam-indie pacing, more breathing
+   *  room around each character (FINAL_GOAL §K5: 96×96 chars). */
   scale?: number;
 }
+
+/** v6 §K5 (S-508): map internal 128-unit art-space → 96-px display height
+ *  so external `scale=1.0` reads as the spec-mandated ~96 px. The poly
+ *  rig (head at y=-128, feet at y=0) is unchanged — we just compress the
+ *  view at the Container level to avoid touching ~600 lines of carefully-
+ *  hand-tuned coordinates. */
+export const NATIVE_DISPLAY_SCALE = 0.75;
 
 /** Top-pants y0 (waist line) and y1 (ankle line) in character-local units.
  *  Briefs occupy y ∈ [-36, -20]. With y=0 the top-pants sits over the briefs;
@@ -115,6 +128,11 @@ function hashId(id: string): number {
 
 export class Character {
   readonly view: Container;
+  /** v6 §K5 (S-508): inner container that carries the 0.75 art→display
+   *  compression. The 128-unit-tall poly rig (head at y=-128, feet y=0)
+   *  is parented under `art`, so a baseScale=1.0 outer view yields a
+   *  ~96-px-tall on-screen sprite per the FINAL_GOAL §K5 contract. */
+  private readonly art: Container;
   readonly id: string;
   readonly nickname: string;
   facing: 1 | -1;
@@ -187,6 +205,14 @@ export class Character {
 
     this.view = new Container();
     this.view.scale.set(scale * (opts.facing === 1 ? 1 : -1), scale);
+    // v6 §K5 (S-508): inner art container compresses the 128-unit-tall
+    // poly rig down to a ~96-px display height so external scale=1.0
+    // reads as the spec-mandated 96-px sprite. The outer `view` keeps
+    // the facing/scale contract that EffectPlayer + layoutPlayers
+    // depend on; only `art` carries the constant 0.75 down-scale.
+    this.art = new Container();
+    this.art.scale.set(NATIVE_DISPLAY_SCALE, NATIVE_DISPLAY_SCALE);
+    this.view.addChild(this.art);
 
     // Hair style + per-player jitter for squash-and-stretch are derived
     // deterministically from the playerId so the same player always looks
@@ -226,8 +252,11 @@ export class Character {
 
     // Z-order: briefs first (underlayer, always drawn), then topPants on
     // top of them — when topPants slides down, the briefs read.
-    this.view.addChild(this.shadow);
-    this.view.addChild(this.body);
+    // v6 §K5 (S-508): shadow + body added to the inner `art` container
+    // so they inherit the 0.75 art→display compression. `view` stays a
+    // pure transform parent owned by GameStage / EffectPlayer.
+    this.art.addChild(this.shadow);
+    this.art.addChild(this.body);
     this.body.addChild(this.armBack);
     this.body.addChild(this.briefs);
     this.body.addChild(this.topPants);
@@ -532,7 +561,9 @@ export class Character {
       ])
       .fill({ color: 0x000000, alpha: 0.4 });
 
-    // Coordinate system: feet at y=0, head at y ≈ -128 (rig retains the
+    // Coordinate system: feet at y=0, head at y ≈ -128 in art-space — the
+    // outer view + inner `art` Container scale chain compresses this to
+    // ~96 px on screen at external scale=1.0 (v6 §K5 / S-508; rig retains the
     // legacy frame; the chibi proportions live in the head being drawn at
     // ~52px wide vs. body at ~40px wide → head-to-body ratio ≈ 1.3 in
     // px width but the head VOLUME (with hair) reaches ≈ 64px wide vs. a

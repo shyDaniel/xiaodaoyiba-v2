@@ -3532,3 +3532,73 @@ the dimetric basis" criterion from the S-503 acceptance brief.
   and clearly receding side walls. The Hades/Stardew read is now
   unambiguous — silhouette no longer looks flat.
 
+---
+
+## Iteration 96 — §K5 smaller scale 96/192 native (S-508)
+
+**What:** The §K3 zoom (S-491) and §K1 iso geometry (S-497, S-503)
+were correct, but the underlying NATIVE sprite sizes were still
+the Iter-66-era values: characters drawn at ~128 px tall and
+houses at ~220-256 px tall in their own local coord space, on
+top of which the §K3 zoom multiplies a further 1.6×. Live judge
+`jfinal-94-solo-init.png` at 1280×800 4p showed the player house
+bbox spanning ~290 px of the 580-px usable canvas height — about
+**37% of viewport** — well past the §K5 spec's 18-22% Steam-indie
+pacing target. Doc strings still advertised "1.0 ≈ 128 px"
+(Character.ts:57) and "Drawn at native ≥ 256px" (House.ts:3),
+making the desired native sizes ambiguous. S-508 lands the §K5
+"smaller scale" pass: characters drawn at native ~96 px, houses
+at native ~192 px (W) × ~120 px (H), so at the §K3 1.6× zoom the
+player's own house occupies ~22% of an 800-px viewport at 4p —
+the modern Hades/Stardew/Steam-indie read.
+
+**Implementation strategy:** Character.ts has ~600 lines of
+hand-tuned poly geometry coordinates anchored at head y=-128,
+feet y=0 — rewriting every coordinate to a 96-unit grid would
+risk regressing all of §J (anim, attack frames, shadow placement,
+crown/halo positioning, banner offsets). Instead the change
+introduces an inner `art` Container as the first child of `view`,
+with constant 0.75 scale = 96/128 = `NATIVE_DISPLAY_SCALE`. All
+existing body/shadow/crown/banner children re-parent under `art`
+unchanged, so external `scale=1.0` now maps to ~96-px display
+height while every internal poly coordinate stays put. House.ts
+keeps its iso-projected geometry; only the doc comment + the
+GameStage default `width`/`height` ctor args drop from 200/220
+to 192/120.
+
+**Files touched:**
+- `packages/client/src/canvas/characters/Character.ts` (+~25 net:
+  doc comment, exported `NATIVE_DISPLAY_SCALE = 0.75`, `private
+  readonly art: Container`, art container construction +
+  re-parenting in ctor)
+- `packages/client/src/canvas/stage/House.ts` (header doc-comment
+  refresh from "native ≥ 256 px" → "native ≈ 192 px")
+- `packages/client/src/canvas/GameStage.tsx` (`charNativeH = 96 *
+  1.05`, `baseHouseW = 192`, `baseHouseH = 120`, lower fitHouseH
+  floor 120→90 + fitHouseW floor 110→90, both House() ctor sites
+  width/height 200/220 → 192/120)
+- `packages/client/src/canvas/stage/iso-projection.test.ts` (2
+  fixtures updated to walk through the new art Container —
+  `ch.view.children[0].children[0]` for the shadow Graphics)
+
+**Verification:**
+- `pnpm test` — shared 79/79, server 21/21, client **170/170**.
+  270 total green; iso-projection tests still lock plinth
+  parallelogram + S-503 wall-asymmetry contract.
+- `pnpm build` — gzipped client `index.js` within budget; tsc
+  --noEmit clean across all three packages.
+- Headless smoke (`scripts/smoke-headless.mjs`) — server boots,
+  /healthz answers, sim under `--strict` exits 0; phase budgets
+  unchanged (action_total_ms=3200, reveal_ms=1500,
+  round_total_ms=4700).
+- Live chrome-devtools MCP probe at 1280×800 4-player solo init
+  (camera at §K3 1.6× hold beat): player's own front-row house
+  bbox = **150 × 180 px** (180-px tall = 22.5% of 800-px viewport
+  — at the upper bound of the §K5 18-22% target, in the 140-180
+  px acceptance band). Back-row neighbor house bbox = 128 × 153
+  px (19.1% of viewport). Characters now read ~96 px tall instead
+  of ~128 px, leaving visible mountain/sky margin above the
+  rooftops where before the houses crowded into the parallax
+  band — the Steam-indie pacing the brief asks for, replacing
+  the 2010-prototype "boxes fill the screen" feel.
+

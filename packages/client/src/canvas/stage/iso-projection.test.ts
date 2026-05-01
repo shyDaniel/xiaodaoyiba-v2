@@ -453,9 +453,13 @@ describe('§K1 (S-475) — character casts iso diamond shadow', () => {
       nickname: 'iso',
       facing: 1,
     });
-    // The shadow Graphics is the first child of the view (drawn first
-    // so the body lays on top of it).
-    const shadowG = ch.view.children[0] as { context: { instructions: unknown[] } };
+    // v6 §K5 (S-508): the character poly rig is now nested inside an
+    // inner `art` Container that carries the 0.75 art→display scale
+    // (so external scale=1.0 reads as a ~96-px sprite per spec). The
+    // shadow Graphics is the first child of `art`, which is itself
+    // the first (and only) child of `view`.
+    const art = ch.view.children[0] as { children: unknown[] };
+    const shadowG = art.children[0] as { context: { instructions: unknown[] } };
     expect(shadowG, 'character shadow Graphics not found').toBeDefined();
     const polys = extractDiamondCandidates(shadowG);
     expect(polys.length, 'no 4-vertex polygons found on character shadow').toBeGreaterThanOrEqual(1);
@@ -476,7 +480,10 @@ describe('§K1 (S-475) — character casts iso diamond shadow', () => {
       nickname: 'iso',
       facing: 1,
     });
-    const shadowG = ch.view.children[0] as { context: { instructions: unknown[] } };
+    // v6 §K5 (S-508): shadow is now under the inner `art` container —
+    // see comment above for rationale.
+    const art = ch.view.children[0] as { children: unknown[] };
+    const shadowG = art.children[0] as { context: { instructions: unknown[] } };
     const ellipses: unknown[] = [];
     for (const ins of shadowG.context.instructions as FillInstruction[]) {
       if (ins.action !== 'fill') continue;

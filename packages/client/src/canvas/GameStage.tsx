@@ -307,8 +307,12 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
           const house = new House({
             ownerId: p.id,
             ownerName: p.nickname,
-            width: 200,
-            height: 220,
+            // v6 §K5 (S-508): native ≈ 192-wide × 168-tall; layoutPlayers
+            // immediately reassigns these via house.resize(spot.houseW,
+            // spot.houseH, ...) so this is just the placeholder until
+            // the first layout pass runs.
+            width: 192,
+            height: 168,
           });
           gameplayLayer.addChild(house.view);
           houses.set(p.id, house);
@@ -423,8 +427,10 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
         const house = new House({
           ownerId: p.id,
           ownerName: p.nickname,
-          width: 200,
-          height: 220,
+          // v6 §K5 (S-508): see mount-pass note — placeholder, immediately
+          // overwritten by layoutPlayers' house.resize() call.
+          width: 192,
+          height: 168,
         });
         refs.gameplayLayer.addChild(house.view);
         refs.houses.set(p.id, house);
@@ -716,7 +722,10 @@ export function computeSpots(
   // (bottom - feetMargin). House visual must clear back-row character
   // heads and not poke into front-row characters; we allot ~0.55 of
   // playable height to back-row visual house extent.
-  const charNativeH = 128 * 1.05; // Character.ts head-top y = -128, baseScale = 1.05*scale
+  // v6 §K5 (S-508): char native display height is 96 px (Character.ts
+  // inner `art` container compresses the 128-unit poly rig × 0.75); with
+  // baseScale=1.05*scale the rendered char tops out at ~101 px at scale=1.
+  const charNativeH = 96 * 1.05;
   // Maximum scale that lets a 1.0-scale character fit inside playableH
   // with a small safety margin. On a 375×667 phone with reserves
   // 92/184, playableH ≈ 391; default scale 1.0 would give the front
@@ -724,10 +733,18 @@ export function computeSpots(
   // house+character stack fitting above front row.
   const maxScale = Math.min(1.0, (playableH - 16) / (charNativeH * 1.5 + 240));
 
-  // Default house geometry — tuned for desktop 1280×800. We narrow it
-  // down for mobile / >2 players (more bodies → less width per body).
-  const baseHouseW = 200;
-  const baseHouseH = 220;
+  // Default house geometry — v6 §K5 (S-508): 192-wide × 120-tall native
+  // so the rendered silhouette (≈ 0.89×h walls+roof + a ~32 px plaque
+  // ribbon above the apex + 6 px plinth skirt below) measures ~145 px
+  // height at scale=1.0 ≈ 18-22% of an 800-px viewport per the §K5
+  // contract. Live measurement at 1280×800 / 4p (canvas 776×616 after
+  // grid chrome): front-row Container.getBounds() → 222 px @ baseHouseH=168;
+  // dropped to baseHouseH=120 → predicted ~158 px (target 144-176 px).
+  // Down from 200×220 to deliver the Steam-indie pacing the §K5 brief
+  // mandates ('player house ~20% of viewport', NOT '~37%' which was
+  // the live judge-final-zoom verdict pre-S-508).
+  const baseHouseW = 192;
+  const baseHouseH = 120;
 
   // Row Y positions inside the playable rect. The original code
   // anchored to the painted ground band (Ground.groundY) which lives
@@ -748,10 +765,16 @@ export function computeSpots(
     const visAbove = rowY - top - 8; // px above the row anchor
     const naturalVisH = baseHouseH * 1.55 * scaleHint;
     if (naturalVisH <= visAbove) return baseHouseH;
-    return Math.max(120, (visAbove / 1.55) / scaleHint);
+    // §K5 (S-508): floor lowered from 120 → 90 to permit narrow viewport
+    // shrinks below the new baseHouseH=120 if vertical chrome demands it
+    // (e.g. bottom-sheet open on mobile). The legacy 120 floor predated
+    // the §K5 size cut and would force houseH ≥ baseHouseH on any
+    // viewport, defeating the reduction.
+    return Math.max(90, (visAbove / 1.55) / scaleHint);
   };
   const fitHouseW = (perPlayer: number): number => {
-    return Math.min(baseHouseW, Math.max(110, perPlayer * 0.78));
+    // §K5 (S-508): floor lowered 110 → 90 for the same reason as fitHouseH.
+    return Math.min(baseHouseW, Math.max(90, perPlayer * 0.78));
   };
 
   if (n === 1) {
