@@ -7,9 +7,10 @@
 //  - 20 simulated rounds advance state without exceptions and without
 //    infinite loops.
 //  - Engine purity: input arrays/maps are not mutated.
-//  - 7-phase timeline (REVEAL+PREP→RETURN) sums to ROUND_TOTAL_MS exactly
-//    and the action sub-segment still sums to ACTION_TOTAL_MS (also
-//    asserted at module-load in engine.ts, but covered here for visibility).
+//  - 6-phase timeline (REVEAL+PREP→IMPACT, FINAL_GOAL §K2 dropped RETURN)
+//    sums to ROUND_TOTAL_MS exactly and the action sub-segment still sums
+//    to ACTION_TOTAL_MS (also asserted at module-load in engine.ts, but
+//    covered here for visibility).
 //  - DEAD players never participate in RPS or get acted on.
 //  - PULL_PANTS persists: a player's pants_down stage carries forward to
 //    subsequent rounds (FINAL_GOAL §C7 truth-source check at the engine
@@ -21,7 +22,6 @@ import {
   PHASE_T_IMPACT,
   PHASE_T_PREP,
   PHASE_T_PULL_PANTS,
-  PHASE_T_RETURN,
   PHASE_T_REVEAL,
   PHASE_T_RUSH,
   PHASE_T_STRIKE,
@@ -41,6 +41,8 @@ function mkPlayers(ids: string[]): PlayerState[] {
 describe('PHASE_OFFSETS', () => {
   it('matches timing.ts cumulative offsets and totals ROUND_TOTAL_MS', () => {
     // REVEAL is the first phase (FINAL_GOAL §H2): 0 → PHASE_T_REVEAL.
+    // v6 §K2 removed the trailing RETURN beat, so IMPACT is the closing
+    // phase and ROUND_TOTAL_MS = REVEAL + ACTION_TOTAL_MS = 4700.
     expect(PHASE_OFFSETS.REVEAL).toBe(0);
     expect(PHASE_OFFSETS.PREP).toBe(PHASE_T_REVEAL);
     expect(PHASE_OFFSETS.RUSH).toBe(PHASE_T_REVEAL + PHASE_T_PREP);
@@ -57,20 +59,14 @@ describe('PHASE_OFFSETS', () => {
         PHASE_T_PULL_PANTS +
         PHASE_T_STRIKE,
     );
-    expect(PHASE_OFFSETS.RETURN).toBe(
-      PHASE_T_REVEAL +
-        PHASE_T_PREP +
-        PHASE_T_RUSH +
-        PHASE_T_PULL_PANTS +
-        PHASE_T_STRIKE +
-        PHASE_T_IMPACT,
-    );
-    // Total round timeline closes at ROUND_TOTAL_MS, and the action
-    // sub-segment (PREP→RETURN, the part after REVEAL) still totals
-    // ACTION_TOTAL_MS so older callers reading "action duration" stay
-    // correct.
-    expect(PHASE_OFFSETS.RETURN + PHASE_T_RETURN).toBe(ROUND_TOTAL_MS);
+    // Total round timeline closes at ROUND_TOTAL_MS (= 4700), and the
+    // action sub-segment (PREP→IMPACT, the part after REVEAL) still
+    // totals ACTION_TOTAL_MS (= 3200) so callers reading "action
+    // duration" in isolation stay correct.
+    expect(PHASE_OFFSETS.IMPACT + PHASE_T_IMPACT).toBe(ROUND_TOTAL_MS);
     expect(ROUND_TOTAL_MS - PHASE_OFFSETS.PREP).toBe(ACTION_TOTAL_MS);
+    expect(ACTION_TOTAL_MS).toBe(3200);
+    expect(ROUND_TOTAL_MS).toBe(4700);
   });
 });
 
@@ -99,8 +95,11 @@ describe('resolveRound — acceptance scenario (4-player RPSR)', () => {
   it('emits the full phase timeline with timing-constant durations', () => {
     const out = resolveRound(players, 1, { choices });
     const phases = effectsOfType(out.effects, 'PHASE_START');
+    // v6 §K2: 6-phase timeline (RETURN dropped). IMPACT is now the closing
+    // beat and the actor lingers at the target's house through the full
+    // round end.
     expect(phases.map((p) => p.phase)).toEqual([
-      'REVEAL', 'PREP', 'RUSH', 'PULL_PANTS', 'STRIKE', 'IMPACT', 'RETURN',
+      'REVEAL', 'PREP', 'RUSH', 'PULL_PANTS', 'STRIKE', 'IMPACT',
     ]);
     expect(phases.map((p) => p.atMs)).toEqual([
       0,
@@ -109,16 +108,16 @@ describe('resolveRound — acceptance scenario (4-player RPSR)', () => {
       PHASE_T_REVEAL + PHASE_T_PREP + PHASE_T_RUSH,
       PHASE_T_REVEAL + PHASE_T_PREP + PHASE_T_RUSH + PHASE_T_PULL_PANTS,
       PHASE_T_REVEAL + PHASE_T_PREP + PHASE_T_RUSH + PHASE_T_PULL_PANTS + PHASE_T_STRIKE,
-      PHASE_T_REVEAL + PHASE_T_PREP + PHASE_T_RUSH + PHASE_T_PULL_PANTS + PHASE_T_STRIKE + PHASE_T_IMPACT,
     ]);
     expect(phases.map((p) => p.durationMs)).toEqual([
       PHASE_T_REVEAL, PHASE_T_PREP, PHASE_T_RUSH, PHASE_T_PULL_PANTS,
-      PHASE_T_STRIKE, PHASE_T_IMPACT, PHASE_T_RETURN,
+      PHASE_T_STRIKE, PHASE_T_IMPACT,
     ]);
     // Last phase starts + duration sums to the full round timeline
-    // (REVEAL + ACTION_TOTAL_MS = ROUND_TOTAL_MS).
+    // (REVEAL + ACTION_TOTAL_MS = ROUND_TOTAL_MS = 4700).
     const last = phases[phases.length - 1]!;
     expect(last.atMs + last.durationMs).toBe(ROUND_TOTAL_MS);
+    expect(last.atMs + last.durationMs).toBe(4700);
   });
 
   it('emits a single RPS_REVEAL effect carrying every alive player\'s throw', () => {
@@ -421,7 +420,7 @@ describe('resolveRound — 20-round simulation', () => {
   //   - no exceptions
   //   - every round emits ROUND_START at atMs 0
   //   - if any single round produces an action timeline, it sums to
-  //     ACTION_TOTAL_MS exactly
+  //     ROUND_TOTAL_MS (REVEAL + ACTION_TOTAL_MS) exactly
   //   - state monotonically progresses (no resurrected players, alive count
   //     is non-increasing)
   function mulberry32(seed: number): () => number {
@@ -453,10 +452,12 @@ describe('resolveRound — 20-round simulation', () => {
       expect((out.effects[0] as Extract<Effect, { type: 'ROUND_START' }>).atMs).toBe(0);
 
       // If we had an action timeline, it sums to ROUND_TOTAL_MS
-      // (REVEAL + ACTION_TOTAL_MS) — see FINAL_GOAL §H2.
+      // (REVEAL + ACTION_TOTAL_MS) — see FINAL_GOAL §H2/§K2. v6 §K2
+      // dropped the trailing RETURN beat, leaving 6 PHASE_START events
+      // per action round.
       const phases = effectsOfType(out.effects, 'PHASE_START');
       if (phases.length > 0) {
-        expect(phases).toHaveLength(7);
+        expect(phases).toHaveLength(6);
         const last = phases[phases.length - 1]!;
         expect(last.atMs + last.durationMs).toBe(ROUND_TOTAL_MS);
       }

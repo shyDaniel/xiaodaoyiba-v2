@@ -3273,3 +3273,67 @@ side-elevation triangles + horizontal ellipses.
   in-flight iso plinth + side-skirt + iso eave edits (+94/−5 lines)
 - `packages/client/src/canvas/stage/iso-projection.test.ts` — new
   regression test (3 cases) locking in the iso footprint contract
+
+---
+
+## S-484: §K2 drop RETURN beat — actor stays at target's house
+
+**Why:** FINAL_GOAL §K2 dropped the trailing RETURN beat. Previously
+the round arc was REVEAL→PREP→RUSH→PULL_PANTS→STRIKE→IMPACT→RETURN
+(800 ms walk-back), totalling 5500 ms. The walk-back tween made the
+two-frame Hades/Stardew pose snap-back jarring and the round felt
+draggy. New arc ends at IMPACT and the actor stays parented at the
+target's house through the round end; reset() between rounds snaps
+them home before the next PREP. Round total drops from 5500 → 4700 ms.
+
+**What changed:**
+- `packages/shared/src/game/timing.ts` — removed `PHASE_T_RETURN`;
+  `ACTION_TOTAL_MS` 4000 → 3200; `ROUND_TOTAL_MS` 5500 → 4700;
+  6-phase header doc rewritten with §K2 rationale.
+- `packages/shared/src/game/types.ts` — `ActionPhase` union dropped
+  `'RETURN'`; docstring updated.
+- `packages/shared/src/game/engine.ts` — removed `PHASE_T_RETURN`
+  import + the `{ phase: 'RETURN' }` entry from `PHASE_TIMELINE`;
+  PHASE_OFFSETS comment updated to reference §K2 (REVEAL=0, PREP=1500,
+  RUSH=1800, PULL_PANTS=2400, STRIKE=3300, IMPACT=3900).
+- `packages/shared/src/game/effects.ts` — comment block updated to
+  describe the 5-phase action timeline ending at IMPACT.
+- `packages/shared/src/game/engine.test.ts` — `PHASE_T_RETURN`
+  import removed; PHASE_OFFSETS test asserts
+  `IMPACT + PHASE_T_IMPACT === ROUND_TOTAL_MS === 4700` and
+  `ACTION_TOTAL_MS === 3200`; phases test expects 6 phases (no
+  RETURN); 20-round sim test expects 6 PHASE_START events per non-tie
+  round.
+- `packages/client/src/canvas/EffectPlayer.ts` — removed
+  `PHASE_T_RETURN` + `ACTION_TOTAL_MS` imports; added
+  `PHASE_T_IMPACT` + `PHASE_T_STRIKE`; replaced the RETURN
+  `scheduleAt` block (which did
+  `actor.moveTo(actorHomeX, PHASE_T_RETURN, 'in-out')` plus a
+  zoom-back-to-1.0) with an IMPACT-anchored camera-only zoom-back
+  (`PHASE_T_IMPACT`) — the actor's `setState('IDLE')` still fires but
+  there is no walk-back tween. The actor stays at the target's spot
+  through round end; `reset()` between rounds snaps them back to
+  homeX. Inline `atReturn` derivation removed; `atImpact` derived from
+  `atStrike + PHASE_T_STRIKE`. Doc comments + `play()` timeline
+  block + `getHomeX` JSDoc all updated to match.
+- `packages/server/src/rooms/Room.test.ts` — comment "5500 = REVEAL
+  1500 + ACTION 4000" → "4700 = REVEAL 1500 + ACTION 3200"; test
+  still passes (`vi.advanceTimersByTime(6000)` exceeds new 4700ms).
+
+**Verification:**
+- `pnpm -r build` — shared/server/client all pass (vite emits the
+  expected chunk-size warning, unchanged from prior iterations).
+- `pnpm -r test` — shared 79/79, server 21/21, client 161/161 all
+  pass.
+- `pnpm sim --players 4 --bots counter,random,iron,mirror --rounds 10
+  --seed 42` — summary line confirms `action_total_ms=3200
+  reveal_ms=1500 round_total_ms=4700`.
+
+**Files touched:**
+- `packages/shared/src/game/timing.ts` (+/−)
+- `packages/shared/src/game/types.ts` (+/−)
+- `packages/shared/src/game/engine.ts` (+/−)
+- `packages/shared/src/game/effects.ts` (+/−)
+- `packages/shared/src/game/engine.test.ts` (+/−)
+- `packages/client/src/canvas/EffectPlayer.ts` (+/−)
+- `packages/server/src/rooms/Room.test.ts` (+/−)

@@ -114,8 +114,9 @@ describe('Room', () => {
     // round's bot pre-submit triggers a new snapshot). Let's just make sure
     // no second round was emitted.
     expect(bx.rounds.length).toBe(1);
-    // advance past ROUND_TOTAL_MS (5500 = REVEAL 1500 + ACTION 4000) —
-    // second round should now begin (FINAL_GOAL §H2 reveal hold).
+    // advance past ROUND_TOTAL_MS (4700 = REVEAL 1500 + ACTION 3200) —
+    // second round should now begin (FINAL_GOAL §H2 reveal hold; §K2
+    // dropped the trailing RETURN beat).
     vi.advanceTimersByTime(6000);
     // No new round broadcast yet (humans haven't submitted), but snapshot
     // round counter advances to 2 once beginRound runs.

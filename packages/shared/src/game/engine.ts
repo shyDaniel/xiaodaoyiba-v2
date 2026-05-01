@@ -3,10 +3,11 @@
 // `resolveRound(state, inputs)` is a pure function: same inputs → same outputs,
 // no I/O, no clock, no Math.random. The engine wraps `resolveRps` (the RPS
 // majority/outlier rule from FINAL_GOAL §A2) with action selection
-// (PULL_PANTS / CHOP), narration emission, and 5-phase timeline tagging
-// (durations imported verbatim from `timing.ts`). It is the single primitive
-// that the headless sim CLI, the Socket.IO server, and the client EffectPlayer
-// all advance state with — there is no second engine elsewhere.
+// (PULL_PANTS / CHOP), narration emission, and 6-phase timeline tagging
+// (REVEAL → PREP → RUSH → PULL_PANTS → STRIKE → IMPACT, durations imported
+// verbatim from `timing.ts`). It is the single primitive that the headless
+// sim CLI, the Socket.IO server, and the client EffectPlayer all advance
+// state with — there is no second engine elsewhere.
 //
 // Design notes
 // ------------
@@ -32,7 +33,6 @@ import {
   PHASE_T_IMPACT,
   PHASE_T_PREP,
   PHASE_T_PULL_PANTS,
-  PHASE_T_RETURN,
   PHASE_T_REVEAL,
   PHASE_T_RUSH,
   PHASE_T_STRIKE,
@@ -54,7 +54,12 @@ import { defaultNarrator } from '../narrative/lines.js';
  *  ROUND_TOTAL_MS (REVEAL + ACTION_TOTAL_MS). Computed from timing.ts so
  *  swapping the constants flows everywhere. The REVEAL phase opens every
  *  non-tie round so all players' throws can be displayed simultaneously
- *  above their stations (FINAL_GOAL §H2) before the rush kicks in. */
+ *  above their stations (FINAL_GOAL §H2) before the rush kicks in.
+ *
+ *  v6 §K2: the RETURN beat was removed. The actor stays at the target's
+ *  house through IMPACT and the next round's PREP teleports them home,
+ *  so a successful pants-pull or chop lingers on screen instead of being
+ *  immediately undone by a return-walk animation. */
 const PHASE_TIMELINE: ReadonlyArray<{
   phase: ActionPhase;
   atMs: number;
@@ -67,7 +72,6 @@ const PHASE_TIMELINE: ReadonlyArray<{
     { phase: 'PULL_PANTS', durationMs: PHASE_T_PULL_PANTS },
     { phase: 'STRIKE', durationMs: PHASE_T_STRIKE },
     { phase: 'IMPACT', durationMs: PHASE_T_IMPACT },
-    { phase: 'RETURN', durationMs: PHASE_T_RETURN },
   ];
   let cursor = 0;
   return phases.map((p) => {
@@ -79,16 +83,16 @@ const PHASE_TIMELINE: ReadonlyArray<{
 
 /** atMs of the start of each phase, for callers that need the offsets
  *  without iterating. Validated as cumulative-sums-to-ROUND_TOTAL_MS at
- *  module load. After §H2 REVEAL=0, PREP=PHASE_T_REVEAL=1500, …,
- *  RETURN+PHASE_T_RETURN=ROUND_TOTAL_MS=5500. */
+ *  module load. After §H2/§K2 REVEAL=0, PREP=PHASE_T_REVEAL=1500, …,
+ *  IMPACT+PHASE_T_IMPACT=ROUND_TOTAL_MS=4700. */
 export const PHASE_OFFSETS: Readonly<Record<ActionPhase, number>> = (() => {
   const out: Record<string, number> = {};
   for (const { phase, atMs } of PHASE_TIMELINE) out[phase] = atMs;
   return out as Record<ActionPhase, number>;
 })();
 
-/** Self-test: the 7-phase timeline must sum to exactly ROUND_TOTAL_MS,
- *  and the action sub-segment (PREP→RETURN, i.e. excluding REVEAL) must
+/** Self-test: the 6-phase timeline must sum to exactly ROUND_TOTAL_MS,
+ *  and the action sub-segment (PREP→IMPACT, i.e. excluding REVEAL) must
  *  still sum to ACTION_TOTAL_MS so callers reasoning about action
  *  duration in isolation keep working. This runs at import time so a
  *  typo in timing.ts is caught immediately instead of producing a
@@ -239,9 +243,10 @@ export function resolveRound(
     reason: rps.reason as 'two-way' | 'majority' | 'outlier',
   });
 
-  // Emit the 5-phase timeline (always emitted on action rounds, regardless
+  // Emit the 6-phase timeline (always emitted on action rounds, regardless
   // of how many winner/loser pairings actually fire — the choreography is a
-  // single shared timeline for the round).
+  // single shared timeline for the round). v6 §K2 dropped the trailing
+  // RETURN beat so the actor lingers at the target's house.
   for (const { phase, atMs, durationMs } of PHASE_TIMELINE) {
     effects.push({ type: 'PHASE_START', round, phase, atMs, durationMs });
   }
@@ -404,7 +409,8 @@ function finalize(
   if (isGameOver) {
     // GAME_OVER fires at the end of the round timeline (REVEAL +
     // ACTION_TOTAL_MS) so the renderer's confetti burst lines up with
-    // the final RETURN beat rather than overlapping the reveal.
+    // the final IMPACT beat rather than overlapping the reveal. v6 §K2
+    // removed the RETURN beat, so IMPACT is now the closing phase.
     effects.push({
       type: 'GAME_OVER',
       round,

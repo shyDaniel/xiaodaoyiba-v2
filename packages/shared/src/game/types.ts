@@ -43,12 +43,15 @@ export type PlayerStage = 'ALIVE_CLOTHED' | 'ALIVE_PANTS_DOWN' | 'DEAD';
 export type ActionKind = 'PULL_PANTS' | 'CHOP' | 'PULL_OWN_PANTS_UP' | 'NONE';
 
 /**
- * 7-phase round timeline (FINAL_GOAL §A5/§B4/§H2). The engine tags each
- * round with its phase boundaries so sim, server, and client all advance
- * the same timeline. Names match timing.ts constants 1:1. REVEAL is the
- * pre-action hold during which every alive player's RPS choice is rendered
- * as a large glyph above their station so a first-time viewer can scan the
- * field and count the distribution before the rush begins (§H2).
+ * 6-phase round timeline (FINAL_GOAL §A5/§B4/§H2/§K2). The engine tags
+ * each round with its phase boundaries so sim, server, and client all
+ * advance the same timeline. Names match timing.ts constants 1:1. REVEAL
+ * is the pre-action hold during which every alive player's RPS choice is
+ * rendered as a large glyph above their station so a first-time viewer
+ * can scan the field and count the distribution before the rush begins
+ * (§H2). The RETURN beat was removed in v6 (§K2): the actor stays at
+ * the target's house through IMPACT and the next round's PREP teleports
+ * them back home.
  */
 export type ActionPhase =
   | 'REVEAL'
@@ -56,8 +59,7 @@ export type ActionPhase =
   | 'RUSH'
   | 'PULL_PANTS'
   | 'STRIKE'
-  | 'IMPACT'
-  | 'RETURN';
+  | 'IMPACT';
 
 /**
  * A player as the engine sees it. Layered systems (server/Room, client/store)

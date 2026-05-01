@@ -6,11 +6,15 @@
 //   - the PixiJS client tweens sprite/camera state over these intervals.
 //
 // FINAL_GOAL §A5 mandates that no other file in the repo hard-codes these
-// values; everything imports from here. The 7-phase round timeline
-// (REVEAL → PREP → RUSH → PULL_PANTS → STRIKE → IMPACT → RETURN) sums to
-// exactly ROUND_TOTAL_MS, by spec. The action sub-segment (PREP→RETURN)
-// still totals ACTION_TOTAL_MS so older callers reading the action duration
-// keep working.
+// values; everything imports from here. The 6-phase round timeline
+// (REVEAL → PREP → RUSH → PULL_PANTS → STRIKE → IMPACT) sums to exactly
+// ROUND_TOTAL_MS, by spec. The action sub-segment (PREP→IMPACT) totals
+// ACTION_TOTAL_MS so older callers reading the action duration keep working.
+//
+// FINAL_GOAL §K2 (v6) removed the RETURN beat: the actor stays at the
+// target's house until the NEXT round's PREP teleports them home, so a
+// successful chop or pants-pull lingers on-screen instead of immediately
+// being undone by a return-walk animation.
 //
 //   REVEAL     1500ms    [    0 →  1500]   simultaneous throw glyphs
 //   PREP        300ms    [ 1500 →  1800]   anticipation crouch
@@ -18,10 +22,9 @@
 //   PULL_PANTS  900ms    [ 2400 →  3300]   the 扒裤衩 reveal
 //   STRIKE      600ms    [ 3300 →  3900]   knife wind-up + chop
 //   IMPACT      800ms    [ 3900 →  4700]   shake + wood chip burst
-//   RETURN      800ms    [ 4700 →  5500]   attacker walks back
 //                       ─────
-//                        5500ms = ROUND_TOTAL_MS
-//                        4000ms = ACTION_TOTAL_MS  (PREP→RETURN segment)
+//                        4700ms = ROUND_TOTAL_MS
+//                        3200ms = ACTION_TOTAL_MS  (PREP→IMPACT segment)
 
 /**
  * REVEAL phase — held BEFORE the action timeline starts. Long enough for a
@@ -34,10 +37,9 @@ export const PHASE_T_RUSH = 600;
 export const PHASE_T_PULL_PANTS = 900;
 export const PHASE_T_STRIKE = 600;
 export const PHASE_T_IMPACT = 800;
-export const PHASE_T_RETURN = 800;
-/** Duration of the action sub-segment only (PREP through RETURN). Kept for
+/** Duration of the action sub-segment only (PREP through IMPACT). Kept for
  *  callers that talk about "how long an action plays". */
-export const ACTION_TOTAL_MS = 4000;
+export const ACTION_TOTAL_MS = 3200;
 /** Total round duration (REVEAL + action). What the server holds before
  *  beginning the next round on a non-tie path. */
 export const ROUND_TOTAL_MS = PHASE_T_REVEAL + ACTION_TOTAL_MS;

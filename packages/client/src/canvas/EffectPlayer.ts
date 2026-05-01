@@ -27,11 +27,11 @@ import type {
   PlayerState,
 } from '@xdyb/shared';
 import {
-  ACTION_TOTAL_MS,
+  PHASE_T_IMPACT,
   PHASE_T_PULL_PANTS,
-  PHASE_T_RETURN,
   PHASE_T_REVEAL,
   PHASE_T_RUSH,
+  PHASE_T_STRIKE,
   ROUND_TOTAL_MS,
   TIE_NARRATION_HOLD_MS,
 } from '@xdyb/shared';
@@ -55,9 +55,10 @@ export interface EffectPlayerScene {
   /** Get the live Character instance for a player id, or undefined if it
    *  was reconciled away mid-round (defensive — should not happen). */
   getCharacter(id: PlayerId): Character | undefined;
-  /** World x of the character's home spot — where they idle and return to.
-   *  Read once at action start so a mid-action layout reflow does not
-   *  desync the RETURN tween. */
+  /** World x of the character's home spot — where they idle. Read once at
+   *  action start so a mid-action layout reflow does not desync the rush
+   *  approach-side computation. (§K2: actor stays at target through round
+   *  end; reset() snaps them home before the next PREP.) */
   getHomeX(id: PlayerId): number | undefined;
   /** Optional particle channels. EffectPlayer spawns into them at the
    *  right phase beats; if absent, particle calls are silent no-ops so
@@ -170,20 +171,19 @@ export class EffectPlayer {
   /**
    * Play one round's Effect[] choreography on the canvas.
    *
-   * Timeline (action round, t in ms from t0):
-   *   0    PHASE_START PREP                     → actor: PREP
-   *   300  PHASE_START RUSH                     → actor: RUSH + moveTo(victim.spotX, RUSH=600ms)
-   *   900  PHASE_START PULL_PANTS  + ACTION     → actor: PULL; victim: SHAME + slideTopPantsDown(900ms)
-   *   1300 SET_STAGE (engine ALIVE_PANTS_DOWN)  → victim.setPantsDown(true) (locks the briefs in)
-   *   1800 PHASE_START STRIKE                   → actor: STRIKE (chops on PULL_PANTS targets too,
-   *                                                conceptually a pose hold; for CHOP rounds the
-   *                                                blade actually connects here and SET_STAGE→DEAD)
-   *   2400 PHASE_START IMPACT                   → (camera shake / particle burst hooks; future)
-   *   3200 PHASE_START RETURN                   → actor: IDLE + moveTo(homeX, RETURN=800ms, 'in-out')
-   *   4000 ACTION_TOTAL_MS                      → resolve()
+   * Timeline (action round, t in ms from t0; FINAL_GOAL §K2 — no RETURN):
+   *   0    REVEAL hold (RPS glyphs above stations, PHASE_T_REVEAL=1500)
+   *   1500 PHASE_START PREP                     → actor: PREP
+   *   1800 PHASE_START RUSH                     → actor: RUSH + moveTo(victim.spotX, RUSH=600ms)
+   *   2400 PHASE_START PULL_PANTS + ACTION      → actor: PULL; victim: SHAME + slideTopPantsDown(900ms)
+   *   3300 PHASE_START STRIKE                   → actor: STRIKE (CHOP rounds: blade connects, SET_STAGE→DEAD)
+   *   3900 PHASE_START IMPACT                   → camera shake / particle burst; camera reset to neutral
+   *   4700 ROUND_TOTAL_MS                       → resolve(); actor STAYS at target's house (reset()
+   *                                                between rounds snaps them back home — §K2 "next
+   *                                                PREP teleports them back").
    *
    * Tie round: TIE_NARRATION fires once at atMs=0; resolve() fires after
-   * TIE_NARRATION_HOLD_MS (2000ms).
+   * REVEAL + TIE_NARRATION_HOLD_MS (1500 + 2000 = 3500ms).
    */
   async play(
     effects: ReadonlyArray<Effect>,
@@ -263,15 +263,18 @@ export class EffectPlayer {
       });
     }
 
-    // Schedule per-pairing character motion. The 5-phase timeline is the
-    // canonical FINAL_GOAL §A5 timing — durations imported from
-    // timing.ts. atMs offsets here mirror PHASE_OFFSETS (PREP=0, RUSH=300,
-    // PULL_PANTS=900, STRIKE=1800, IMPACT=2400, RETURN=3200) but we use
-    // the ACTION effect's own atMs (=PULL_PANTS=900) as the engine's
-    // canonical anchor, then derive RUSH start as (atMs - PHASE_T_RUSH)
-    // and RETURN start as (atMs + PHASE_T_PULL_PANTS + PHASE_T_STRIKE +
-    // PHASE_T_IMPACT). This way a future change to timing.ts ripples
-    // through here with no further edits.
+    // Schedule per-pairing character motion. The 5-phase action timeline
+    // is the canonical FINAL_GOAL §A5/§K2 timing — durations imported
+    // from timing.ts. atMs offsets here mirror PHASE_OFFSETS (REVEAL=0,
+    // PREP=1500, RUSH=1800, PULL_PANTS=2400, STRIKE=3300, IMPACT=3900)
+    // but we use the ACTION effect's own atMs (=PULL_PANTS=2400) as the
+    // engine's canonical anchor, then derive RUSH start as
+    // (atMs - PHASE_T_RUSH) and IMPACT start as
+    // (atMs + PHASE_T_PULL_PANTS + PHASE_T_STRIKE). §K2 dropped the
+    // RETURN beat: the actor stays parented at the target's spot through
+    // IMPACT and is teleported home by reset() before the next round's
+    // PREP. This way a future change to timing.ts ripples through here
+    // with no further edits.
     for (const action of actions) {
       const actor = this.scene.getCharacter(action.actor);
       const victim = this.scene.getCharacter(action.target);
@@ -286,13 +289,13 @@ export class EffectPlayer {
       const approach = actorHomeX <= victimX ? -52 : 52;
       const rushTargetX = victimX + approach;
 
-      // After §H2, PHASE_OFFSETS values are shifted by PHASE_T_REVEAL=1500:
-      //   atPullPants = 2400, atRushStart = 1800, atStrike = 3300,
-      //   atReturn   = 4700, ROUND_TOTAL_MS = 5500.
-      const atPullPants = action.atMs;                    // 2400
-      const atRushStart = atPullPants - PHASE_T_RUSH;      // 1800
-      const atStrike = atPullPants + PHASE_T_PULL_PANTS;   // 3300
-      const atReturn = atStrike + 600 + 800;               // 4700 (STRIKE+IMPACT)
+      // PHASE_OFFSETS after §H2 + §K2:
+      //   REVEAL=0, PREP=1500, RUSH=1800, PULL_PANTS=2400,
+      //   STRIKE=3300, IMPACT=3900, ROUND_TOTAL_MS=4700.
+      const atPullPants = action.atMs;                       // 2400
+      const atRushStart = atPullPants - PHASE_T_RUSH;        // 1800
+      const atStrike = atPullPants + PHASE_T_PULL_PANTS;     // 3300
+      const atImpact = atStrike + PHASE_T_STRIKE;            // 3900
 
       // PREP: anticipation crouch. After §H2 the round opens with a
       // REVEAL hold, so PREP starts at PHASE_T_REVEAL (1500ms), not
@@ -418,18 +421,19 @@ export class EffectPlayer {
         }
       });
 
-      // RETURN: walk back to home spot in IDLE. Uses ease-in-out so the
-      // actor doesn't overshoot the home spot. Camera also pulls back
-      // to neutral 1.0 over the RETURN window so the next round starts
-      // un-zoomed (§C4 zoom is per-action, not persistent).
-      scheduleAt(this.timers, t0, atReturn, () => {
+      // IMPACT: actor relaxes to IDLE but STAYS at the target's house
+      // through the end of the round (FINAL_GOAL §K2 — RETURN beat
+      // dropped). Camera pulls back to neutral 1.0 over PHASE_T_IMPACT
+      // so the next round starts un-zoomed (§C4 zoom is per-action, not
+      // persistent). The actor's teleport home happens via reset()
+      // before the next round's PREP.
+      scheduleAt(this.timers, t0, atImpact, () => {
         actor.setState('IDLE');
-        void actor.moveTo(actorHomeX, PHASE_T_RETURN, 'in-out');
         this.scene.camera?.zoomTo(
           actor.view.x,
           actor.view.y - 64,
           1.0,
-          PHASE_T_RETURN,
+          PHASE_T_IMPACT,
           'in-out',
         );
       });

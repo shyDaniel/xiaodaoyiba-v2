@@ -15,15 +15,19 @@
 //
 // Timing semantics
 // ----------------
-// The 5-phase action timeline (PREP → RUSH → PULL_PANTS → STRIKE → IMPACT →
-// RETURN) totals exactly ACTION_TOTAL_MS by spec. Each `PHASE_START` effect
-// carries `atMs` (offset from the round's t=0) and `durationMs` taken
-// literally from `timing.ts`. ROUND_START emits at atMs=0; for a tie round,
-// the engine emits TIE_NARRATION with `durationMs = TIE_NARRATION_HOLD_MS`
-// and no PHASE_* events. For an action round, PHASE_START events emit at
-// 0, 300, 900, 1800, 2400, 3200; ACTION emits at 1800 (the start of
-// PULL_PANTS) and STAGE_CHANGE emits at 2400 (start of STRIKE) for chops or
-// at 1800 + SHAME_FRAME_HOLD_MS for pants_down.
+// The 5-phase action timeline (PREP → RUSH → PULL_PANTS → STRIKE → IMPACT)
+// totals exactly ACTION_TOTAL_MS by spec; the full round (REVEAL + action)
+// totals ROUND_TOTAL_MS. Each `PHASE_START` effect carries `atMs` (offset
+// from the round's t=0) and `durationMs` taken literally from `timing.ts`.
+// ROUND_START emits at atMs=0; for a tie round, the engine emits
+// TIE_NARRATION with `durationMs = TIE_NARRATION_HOLD_MS` and no PHASE_*
+// events. For an action round, PHASE_START events emit at REVEAL=0,
+// PREP=1500, RUSH=1800, PULL_PANTS=2400, STRIKE=3300, IMPACT=3900; ACTION
+// emits at PULL_PANTS=2400 and STAGE_CHANGE emits at STRIKE=3300 for chops
+// or at PULL_PANTS + SHAME_FRAME_HOLD_MS for pants_down.
+//
+// v6 §K2 dropped the trailing RETURN beat: the actor stays at the target's
+// house through IMPACT and is teleported home by the next round's PREP.
 //
 // SET_STAGE is the only effect that mutates persistent player state; the
 // rest are advisory (sound/animation triggers). Consumers fold SET_STAGE
