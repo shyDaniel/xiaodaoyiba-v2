@@ -16,9 +16,10 @@
 // the deadline emits onPick(null) and the parent falls back to engine
 // auto-pick.
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { ActionKind } from '@xdyb/shared';
 import { palette, toCss } from '../palette.js';
+import { usePickerCountdown } from './usePickerCountdown.js';
 
 export interface ActionPickerProps {
   /** Pre-action winner stage so we can offer 穿好裤衩 when applicable. */
@@ -26,8 +27,10 @@ export interface ActionPickerProps {
   /** Pre-action target stage (undefined = no loser was chosen, e.g.
    *  PULL_OWN_PANTS_UP-only path). */
   targetStage?: 'ALIVE_CLOTHED' | 'ALIVE_PANTS_DOWN';
-  /** Total budget in ms before the picker times out. 0 disables timeout
-   *  (used in unit tests). */
+  /** Total budget in ms before the picker times out. Default 8000 per
+   *  §K4 fix S-524 (was 5000 — too aggressive). 0 disables timeout
+   *  (used in unit tests). The countdown freezes while the pointer is
+   *  over the dialog or a child has focus. */
   timeoutMs?: number;
   /** Fired with the chosen action, or null on timeout. */
   onPick: (action: ActionKind | null) => void;
@@ -83,33 +86,26 @@ const COUNTDOWN_TICK_MS = 100;
 export function ActionPicker({
   winnerStage,
   targetStage,
-  timeoutMs = 5000,
+  timeoutMs = 8000,
   onPick,
 }: ActionPickerProps): JSX.Element | null {
-  const [remaining, setRemaining] = useState(timeoutMs);
   const [picked, setPicked] = useState<ActionKind | null>(null);
 
-  useEffect(() => {
-    if (timeoutMs <= 0) return;
-    if (picked !== null) return;
-    const start = Date.now();
-    const id = window.setInterval(() => {
-      const elapsed = Date.now() - start;
-      const left = Math.max(0, timeoutMs - elapsed);
-      setRemaining(left);
-      if (left <= 0) {
-        window.clearInterval(id);
-        onPick(null);
-      }
-    }, COUNTDOWN_TICK_MS);
-    return () => window.clearInterval(id);
-  }, [timeoutMs, picked, onPick]);
+  // Hover-pause + race-safe commit (S-524). See usePickerCountdown.
+  const { remaining, paused, commit, attachRef } = usePickerCountdown(
+    timeoutMs,
+    () => {
+      if (picked !== null) return;
+      onPick(null);
+    },
+  );
 
   const visible = OPTIONS.filter((o) => o.available(winnerStage, targetStage));
   if (visible.length === 0) return null;
 
   const handleClick = (kind: ActionKind): void => {
     if (picked !== null) return;
+    commit();
     setPicked(kind);
     onPick(kind);
   };
@@ -120,6 +116,9 @@ export function ActionPicker({
     <div
       role="dialog"
       aria-label="选一个动作"
+      data-testid="winner-picker-action-dialog"
+      data-paused={paused ? 'true' : 'false'}
+      ref={attachRef}
       style={{
         position: 'absolute',
         left: '50%',
@@ -210,12 +209,17 @@ export function ActionPicker({
       {timeoutMs > 0 ? (
         <div
           aria-label="countdown"
+          data-testid="winner-picker-action-countdown"
+          data-remaining={remaining}
+          data-paused={paused ? 'true' : 'false'}
           style={{
             width: '100%',
             height: 6,
             borderRadius: 3,
             background: 'rgba(247,215,116,0.18)',
             overflow: 'hidden',
+            opacity: paused ? 0.45 : 1,
+            transition: 'opacity 200ms ease-out',
           }}
         >
           <div
@@ -226,6 +230,19 @@ export function ActionPicker({
               transition: `width ${COUNTDOWN_TICK_MS}ms linear`,
             }}
           />
+        </div>
+      ) : null}
+      {paused && timeoutMs > 0 ? (
+        <div
+          aria-live="polite"
+          style={{
+            fontSize: '0.7rem',
+            letterSpacing: '0.18em',
+            color: 'rgba(247,215,116,0.85)',
+            fontWeight: 700,
+          }}
+        >
+          ⏸ 暂停 · 移开鼠标继续倒计时
         </div>
       ) : null}
     </div>

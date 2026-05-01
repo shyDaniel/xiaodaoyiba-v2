@@ -101,8 +101,12 @@ const PHASE_INFOS: Record<string, PhaseInfo> = {
   OVER: { label: '终局', hint: '游戏结束' },
 };
 
-/** Total ms budget for target+action pickers combined (FINAL_GOAL §H3). */
-const PICKER_BUDGET_MS = 5000;
+/** Total ms budget per picker (target then action) — FINAL_GOAL §H3,
+ *  bumped 5000 → 8000 by S-524 because live MCP repro showed users
+ *  could not read both options + click within 5s. The picker also
+ *  pauses while the pointer is over the dialog (see usePickerCountdown),
+ *  so a hovering user has effectively unlimited time to choose. */
+const PICKER_BUDGET_MS = 8000;
 
 export function GamePage({ onExit }: { onExit?: () => void } = {}): JSX.Element {
   const [round, setRound] = useState(1);

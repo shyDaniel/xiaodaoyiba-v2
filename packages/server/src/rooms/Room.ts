@@ -30,8 +30,12 @@ import {
 
 /** §H3 max time the room waits for human winners to submit a target+action
  *  before falling back to engine auto-pick. Mirrors the client picker
- *  budget so a client that ignores the window doesn't stall the room. */
-const WINNER_CHOICE_BUDGET_MS = 5000;
+ *  budget so a client that ignores the window doesn't stall the room.
+ *  Bumped 5000 → 9000 by S-524 — the client picker now defaults to 8s
+ *  and pauses on hover; the server allows one extra second of slack so
+ *  the user's commit always wins the round-trip race against the auto-
+ *  pick fallback. */
+const WINNER_CHOICE_BUDGET_MS = 9000;
 
 export interface RoomMember {
   /** Stable id; matches socket.id for humans, derived id for bots. */

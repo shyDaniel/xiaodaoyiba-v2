@@ -3826,3 +3826,89 @@ because the catch swallowed the decode error. Two-layer fix:
 - ARCHITECTURE.md gained a "Client bundle strategy (§E3, S-520)"
   section documenting the three-layer split + the route-level
   lazy-load + the acceptance numbers.
+
+## S-524 — §K4 winner-picker hover-pause + 8 s budget + race-safe commit
+
+- **Bug repro (live MCP, iter 100):** I won R4 with PANTS_DOWN.
+  ActionPicker rendered showing 穿好裤衩 + 咔嚓; before I could
+  read both options the dialog vanished and the engine
+  fast-forwarded to CHOP→小芳 instead of my intended
+  PULL_OWN_PANTS_UP click. Same shape happened on TargetPicker
+  in earlier rounds. Two compounding causes: (a) hard-coded 5 s
+  budget was too aggressive for first-time viewers; (b)
+  click-vs-timeout race — the click handler set local state
+  but the interval could still flush `onPick(null)` before the
+  parent's resolver saw the picked id.
+- **Fix:**
+  - **New shared hook**
+    `packages/client/src/components/usePickerCountdown.ts`
+    encapsulates the countdown state machine for both pickers.
+    Exposes `{ remaining, paused, commit, attachRef }`. The
+    hook uses **synchronous refs** (`committedRef`,
+    `pausedRef`, `hoverRef`, `focusRef`, `pausedTotalRef`,
+    `pauseStartedAtRef`) that the `setInterval` callback reads
+    directly — so a click that calls `commit()` is observed by
+    the very next interval tick without waiting for a React
+    setState flush. The interval short-circuits on
+    `committedRef.current === true`, eliminating the race.
+  - **Hover/keyboard pause:** `attachRef` is a ref-callback
+    that wires native `mouseenter` / `mouseleave` / `focusin`
+    / `focusout` listeners on the dialog root. (React's
+    synthetic `onMouseEnter` is delegated through `mouseover`
+    synthesis and is brittle to drive from
+    `dispatchEvent(new MouseEvent('mouseenter'))` under
+    jsdom — native listeners behave identically in both real
+    browsers and jsdom.) While paused, the `elapsed`
+    computation discounts (i) cumulative completed-pause time
+    and (ii) the in-progress pause window — so the budget
+    truly stands still rather than being merely deferred.
+  - **Default budget 5 s → 8 s** for both `TargetPicker` and
+    `ActionPicker`. Matched on the server:
+    `Room.ts WINNER_CHOICE_BUDGET_MS 5000 → 9000` (1 s slack
+    over client-visible budget so server-side fallback never
+    races a slow client).
+    `Game.tsx PICKER_BUDGET_MS 5000 → 8000` for the solo
+    code path.
+  - **Visible UX:** added a `⏸ 暂停 · 移开鼠标继续倒计时`
+    indicator under the progress bar when paused. Dimmed the
+    bar to 0.45 opacity so the freeze is obvious. Added
+    `data-testid="winner-picker-{target,action}-dialog"`,
+    `data-testid="winner-picker-{target,action}-countdown"`,
+    `data-paused`, `data-remaining` attributes so future e2e
+    tests can probe state without DOM scraping.
+- **Tests added** (`packages/client/src/components/pickers.test.tsx`):
+  - `TargetPicker pauses countdown while pointer is hovering`
+    — asserts that 6 000 ms of fake-timer advance with the
+    cursor over the dialog does NOT fire `onPick(null)`,
+    while 6 000 ms after `mouseleave` does.
+  - `TargetPicker race-safe commit: late click beats timer`
+    — advances 7 999 ms (1 ms before the 8 s timeout),
+    clicks a target, then advances 200 ms more. Asserts
+    `onPick('p1')` exactly once, never `onPick(null)`.
+  - `ActionPicker hover-pause + late PULL_OWN_PANTS_UP click
+    wins` — the exact bug shape from the iter-100 MCP repro,
+    now an automated regression.
+- **Server tests adjusted** (`packages/server/src/rooms/Room.test.ts`):
+  two tests advanced fake timers by 6 000 ms expecting the
+  9 000 ms (was 5 000 ms) WINNER_CHOICE_BUDGET_MS to have
+  fired; bumped both to 15 000 ms. No production semantics
+  changed — the test budget just had to clear the new
+  threshold.
+- **Acceptance:**
+  - `pnpm test`: 79 shared / 21 server / 196 client = **296/296
+    green** (3 new tests added, all pass).
+  - `pnpm build`: client gzip totals unchanged at 255 KB
+    (well under §E3's 300 KB ceiling); server build clean.
+  - `pnpm sim`: tie_rate=0.260,
+    pull_own_pants_up_total > 0, action_total_ms=3 200 — all
+    consistent with prior runs; the budget bump only affects
+    the human-driven picker path, sim drives bots which use
+    the engine's own auto-pick.
+  - **Live MCP smoke** at `http://localhost:5173` →
+    `/game` (solo): threw ROCK three rounds, on R3 observed
+    `<div data-testid="winner-picker-target-dialog"
+    data-paused="false">` with
+    `data-remaining="4803"` against `data-budget="8000"`
+    — confirms the bumped budget reaches real DOM and the
+    countdown state is exposed for any future e2e assertion.
+

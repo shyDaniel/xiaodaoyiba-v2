@@ -11,8 +11,9 @@
 // Visual style mirrors HandPicker: chunky button, gold accent on hover,
 // player-color stripe so the winner can scan and commit fast.
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { palette, playerColor, toCss } from '../palette.js';
+import { usePickerCountdown } from './usePickerCountdown.js';
 
 export interface TargetCandidate {
   id: string;
@@ -25,9 +26,11 @@ export interface TargetCandidate {
 export interface TargetPickerProps {
   /** Loser candidates. Caller filters out DEAD + already-claimed. */
   candidates: ReadonlyArray<TargetCandidate>;
-  /** Total budget in ms before the picker times out (default 5000 per
-   *  §H3 spec). When 0, the picker shows a "已选" lock and cannot time
-   *  out — used for unit testing. */
+  /** Total budget in ms before the picker times out. Default 8000 per
+   *  §K4 fix S-524 (was 5000 in v6 — too aggressive; auto-resolved
+   *  before the user could read both options). When 0, the picker
+   *  cannot time out — used for unit testing. The countdown freezes
+   *  while the pointer is over the dialog or a child has focus. */
   timeoutMs?: number;
   /** Fired with the candidate's id when the user picks one, or null on
    *  timeout (parent should fall back to engine auto-pick). */
@@ -38,36 +41,28 @@ const COUNTDOWN_TICK_MS = 100;
 
 export function TargetPicker({
   candidates,
-  timeoutMs = 5000,
+  timeoutMs = 8000,
   onPick,
 }: TargetPickerProps): JSX.Element | null {
-  const [remaining, setRemaining] = useState(timeoutMs);
   const [picked, setPicked] = useState<string | null>(null);
 
-  // Countdown — drains the budget every COUNTDOWN_TICK_MS until 0, at
-  // which point we fire onPick(null) so the parent can fall back to
-  // engine auto-pick. The interval is bound to the picker's lifetime
-  // so unmounting (parent already received a pick) cancels it cleanly.
-  useEffect(() => {
-    if (timeoutMs <= 0) return;
-    if (picked !== null) return;
-    const start = Date.now();
-    const id = window.setInterval(() => {
-      const elapsed = Date.now() - start;
-      const left = Math.max(0, timeoutMs - elapsed);
-      setRemaining(left);
-      if (left <= 0) {
-        window.clearInterval(id);
-        onPick(null);
-      }
-    }, COUNTDOWN_TICK_MS);
-    return () => window.clearInterval(id);
-  }, [timeoutMs, picked, onPick]);
+  // Countdown w/ hover-pause + race-safe commit (S-524). The hook
+  // guarantees that a click-driven onPick(id) cannot be clobbered by
+  // a subsequent timer-driven onPick(null), even if the click landed
+  // in the same tick the timer was about to fire.
+  const { remaining, paused, commit, attachRef } = usePickerCountdown(
+    timeoutMs,
+    () => {
+      if (picked !== null) return;
+      onPick(null);
+    },
+  );
 
   if (candidates.length === 0) return null;
 
   const handleClick = (id: string): void => {
     if (picked !== null) return;
+    commit(); // synchronous — interval will short-circuit on next tick
     setPicked(id);
     onPick(id);
   };
@@ -78,6 +73,9 @@ export function TargetPicker({
     <div
       role="dialog"
       aria-label="选一个目标"
+      data-testid="winner-picker-target-dialog"
+      data-paused={paused ? 'true' : 'false'}
+      ref={attachRef}
       style={{
         position: 'absolute',
         left: '50%',
@@ -182,12 +180,17 @@ export function TargetPicker({
       {timeoutMs > 0 ? (
         <div
           aria-label="countdown"
+          data-testid="winner-picker-target-countdown"
+          data-remaining={remaining}
+          data-paused={paused ? 'true' : 'false'}
           style={{
             width: '100%',
             height: 6,
             borderRadius: 3,
             background: 'rgba(247,215,116,0.18)',
             overflow: 'hidden',
+            opacity: paused ? 0.45 : 1,
+            transition: 'opacity 200ms ease-out',
           }}
         >
           <div
@@ -198,6 +201,19 @@ export function TargetPicker({
               transition: `width ${COUNTDOWN_TICK_MS}ms linear`,
             }}
           />
+        </div>
+      ) : null}
+      {paused && timeoutMs > 0 ? (
+        <div
+          aria-live="polite"
+          style={{
+            fontSize: '0.7rem',
+            letterSpacing: '0.18em',
+            color: 'rgba(247,215,116,0.85)',
+            fontWeight: 700,
+          }}
+        >
+          ⏸ 暂停 · 移开鼠标继续倒计时
         </div>
       ) : null}
     </div>

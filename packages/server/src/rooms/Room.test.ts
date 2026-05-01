@@ -114,10 +114,11 @@ describe('Room', () => {
     // round's bot pre-submit triggers a new snapshot). Let's just make sure
     // no second round was emitted.
     expect(bx.rounds.length).toBe(1);
-    // advance past ROUND_TOTAL_MS (4700 = REVEAL 1500 + ACTION 3200) —
-    // second round should now begin (FINAL_GOAL §H2 reveal hold; §K2
-    // dropped the trailing RETURN beat).
-    vi.advanceTimersByTime(6000);
+    // advance past ROUND_TOTAL_MS (4700 = REVEAL 1500 + ACTION 3200)
+    // PLUS the §H3 winner-choice budget (S-524 bumped 5000 → 9000) —
+    // when the host wins they get a picker prompt and the next round
+    // is gated on either their reply or the auto-pick deadline.
+    vi.advanceTimersByTime(15000);
     // No new round broadcast yet (humans haven't submitted), but snapshot
     // round counter advances to 2 once beginRound runs.
     const last = bx.snapshots.at(-1);
@@ -161,10 +162,13 @@ describe('Room', () => {
     // Game still PLAYING — rematch should fail.
     expect(room.rematch('sock-host')).toBe(false);
     // Force a game-over by playing rounds until isGameOver fires.
+    // Tick must exceed BOTH the round timeline AND the §H3 winner-
+    // choice budget (bumped 5000 → 9000 by S-524) so the auto-pick
+    // timer always fires within one loop iteration.
     let safety = 100;
     while (bx.rounds.at(-1)?.isGameOver !== true && safety-- > 0) {
       room.submitChoice('sock-host', 'ROCK');
-      vi.advanceTimersByTime(6000);
+      vi.advanceTimersByTime(15000);
     }
     expect(safety).toBeGreaterThan(0);
     expect(bx.rounds.at(-1)?.isGameOver).toBe(true);
