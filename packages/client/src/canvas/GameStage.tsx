@@ -960,7 +960,24 @@ export function computeSpots(
   // gutter applied INSIDE the playable band — kept small so the houses
   // fan all the way across the available canvas, but >0 to give the
   // outermost stations breathing room from the chrome boundary.
-  const sideMargin = w < 768 ? 4 : 8;
+  // §H1 (S-449): for 5p/6p layouts, raise sideMargin to absorb the
+  // PLAQUE_TEXT_PAD (20 px) below so the outermost slot's center sits
+  // already at clampSlot's `maxCx` — i.e. the clamp never fires and
+  // never has to shrink the outermost station's stationW. Without
+  // this, on 6p × 375 mobile the rightmost slot collapsed from
+  // slotW≈60 to stationW≈28, leaving the plaque ribbon too narrow
+  // (~25 px) for any token — even the ellipsis-fallback path could
+  // not fit 'c…' legibly and the plaque rendered as a per-character
+  // vertical column ('counter#2' → 9 stacked single chars). Raising
+  // sideMargin trades ~5 px of per-slot width (slotW 60 → 54.5 on
+  // mobile 6p) for guaranteed-uniform per-slot width across all six
+  // stations, no clampSlot collapse, and a plaqueW that always fits
+  // 'counter\n#2' on two lines. For n ≤ 4 the slots are already wide
+  // enough that the clamp barely fires, so we keep the smaller
+  // 4 px / 8 px gutter to maximize visual fan-out.
+  const fanCount = n;
+  const tightFan = fanCount >= 5;
+  const sideMargin = tightFan ? 24 : (w < 768 ? 4 : 8);
   const slotBandX0 = playableX0 + sideMargin;
   const usableW = playableW - 2 * sideMargin;
   const slotCount = n;

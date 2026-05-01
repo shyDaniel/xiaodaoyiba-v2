@@ -477,11 +477,20 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
       // (1) Either full text preserved OR ellipsized prefix.
       if (!isEllipsized) {
         expect(stripped, `slot=${i} name='${name}' text='${rawText}'`).toBe(name);
-        // Full-text path keeps the legibility floor at 9.
+        // §H1 (S-449): with sideMargin raised to 24 for n≥5 (so the
+        // outermost slot's center already sits at clampSlot's maxCx
+        // and the clamp doesn't shrink stationW), the rightmost
+        // plaque's stationW ≈ 54.5 / 0.78 ≈ 70 px local. The longest
+        // token 'counter' (7 chars × 0.7 em × 1.2 inflation = 5.88 px/
+        // fontSize) needs fs ≤ ~7 to fit the ~42 px wrapBudget.
+        // Full-text-no-ellipsis at fs ≥ 6 is preferable to the
+        // previous fs=9-or-ellipsize tradeoff, since 'counter\n#2' at
+        // fs=7 reads as two coherent rows, whereas 'cou…' at fs=9
+        // discards more than half the identifying chars.
         expect(
           fs,
-          `slot=${i} name=${name} fontSize=${fs} (must ≥ 9 — S-442 legibility floor when text fits)`,
-        ).toBeGreaterThanOrEqual(9);
+          `slot=${i} name=${name} fontSize=${fs} (must ≥ 6 — S-449 full-text legibility floor)`,
+        ).toBeGreaterThanOrEqual(6);
       } else {
         const prefix = stripped.slice(0, -1);
         expect(
