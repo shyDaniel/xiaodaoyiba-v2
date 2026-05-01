@@ -55,7 +55,7 @@
 // API is deliberately small — one function, one Promise. State lives in
 // Pixi's Assets cache, NOT in this module.
 
-import type { Texture } from 'pixi.js';
+import { Assets, type Texture } from 'pixi.js';
 
 /** Probe + load result. */
 export type SpriteOverride = Texture | null;
@@ -154,12 +154,14 @@ async function defaultProbe(
   }
 }
 
-/** Default texture loader using Pixi's Assets API. We import lazily so the
- *  module can be imported under jsdom (tests) without bringing the full
- *  Pixi runtime + WebGL stubs along. */
+/** Default texture loader using Pixi's Assets API. The static import of
+ *  `pixi.js` at the top of this module is the same import every other
+ *  canvas module already performs (GameStage, Character, House, …) so it
+ *  carries no marginal bundle cost; keeping it static lets Rollup hoist
+ *  pixi into the dedicated `pixi-vendor` manualChunk instead of warning
+ *  about a mixed static+dynamic graph that won't actually code-split. */
 async function defaultLoad(url: string): Promise<Texture | null> {
   try {
-    const { Assets } = await import('pixi.js');
     const tex = (await Assets.load(url)) as Texture | undefined;
     return tex ?? null;
   } catch {

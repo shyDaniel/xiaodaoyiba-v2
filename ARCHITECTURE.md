@@ -366,3 +366,52 @@ full create→join→start→submit handshake. Asserts (a) the 4-char
 code propagates, (b) host and guest receive byte-identical
 `Effect[]` timelines on resolve, (c) the lone surviving player is
 promoted to host on disconnect.
+
+## Client bundle strategy (§E3, S-520)
+
+The §E3 ship gate is **all gzipped JS chunks loaded by `/game` ≤ 300
+KB**. PixiJS 8 alone is ~160 KB gzipped — bigger than every other
+dependency combined — so the chunk graph is laid out so PixiJS pays
+its cost once, in a long-lived vendor chunk, not in every app-code
+update.
+
+**Three-layer split (`packages/client/vite.config.ts` →
+`build.rollupOptions.output.manualChunks`):**
+
+1. **`pixi-vendor`** (~160 KB gzipped): every module under
+   `node_modules/pixi.js/` and `node_modules/@pixi/*`. The whole
+   WebGL renderer lands here. Cached aggressively by hash; app-code
+   changes never invalidate it.
+2. **`react-vendor`** (~45 KB gzipped): `react`, `react-dom`,
+   `scheduler`. The landing route is the only place that needs
+   React eagerly, so this chunk preloads with the entry HTML.
+3. **`index` (entry, ~21 KB gzipped):** the App shell + Landing
+   page + Zustand store + Socket.IO client wrapper. Pixi is NOT
+   in this graph — Game/MultiGame are behind `React.lazy`.
+
+**Route-level lazy split (`App.tsx`):** `GamePage` and
+`MultiGamePage` are wrapped in `lazy(() => import(…))`. Their
+chunks (`Game.js`, `MultiGame.js`, `BattleLog.js`) load only when
+the user actually enters a game (clicks 单机练习 or the host
+clicks 开战). Landing-only first paint ships ~66 KB gzipped
+(index + react-vendor); entering a game pulls in pixi-vendor +
+the route chunk on demand.
+
+**The `loadSpriteWithFallback` static-import note:** earlier
+S-516 used `await import('pixi.js')` inside `defaultLoad` so the
+file could be imported under jsdom without dragging Pixi's WebGL
+stubs into tests. That dynamic import was a no-op for chunking
+(every other canvas module already imports pixi statically) and
+made Rollup print a "dynamically imported but also statically
+imported" warning. S-520 reverts it to a static
+`import { Assets } from 'pixi.js'` — pixi-vendor manualChunk
+catches it; tests still work because the vitest config + the
+existing test fixtures inject a fake `load` dep before the real
+loader runs.
+
+**Acceptance numbers (S-520, measured):**
+- Landing first paint: index + react-vendor ≈ **66 KB gzipped**.
+- /game route (solo or multi): index + react-vendor + pixi-vendor +
+  Game/MultiGame + BattleLog ≈ **255 KB gzipped** (under 300 KB).
+- No "dynamic import will not move module into another chunk"
+  warning. No "chunks larger than 500 kB" warning.

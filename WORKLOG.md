@@ -3785,3 +3785,44 @@ because the catch swallowed the decode error. Two-layer fix:
   unit-testable without monkey-patching `globalThis.fetch`. Tests
   inject a mock `Response` shape; the probe runs through its real
   code path including `arrayBuffer()` decode and PNG-magic check.
+
+## S-520 — §E3 client bundle 342.52 → 255 KB gzipped (vendor chunking + route lazy-load)
+
+- Removed the dead `await import('pixi.js')` from
+  `packages/client/src/canvas/loadSpriteWithFallback.ts:160`. Every
+  other canvas module already statically imports pixi, so the
+  dynamic call did NOT code-split — it just made Rollup print
+  "dynamically imported but also statically imported" warnings
+  for 9 canvas files on every build. Replaced with a static
+  `import { Assets } from 'pixi.js'`; pixi-vendor manualChunk now
+  catches it cleanly. All 12 client test files (193 tests) still
+  pass; the loader unit tests inject `load`/`probe` deps so they
+  never reach the real `Assets.load` code path under jsdom.
+- Added `build.rollupOptions.output.manualChunks` to
+  `packages/client/vite.config.ts`: pixi.js / @pixi/* → `pixi-vendor`,
+  react / react-dom / scheduler → `react-vendor`. Lifted
+  `chunkSizeWarningLimit` to 800 so the unavoidably-large pixi
+  vendor chunk doesn't print a noise warning while still flagging
+  app-code regressions above that threshold.
+- Lazy-loaded `GamePage` + `MultiGamePage` in `App.tsx` via
+  `React.lazy`. Wrapped each in `<Suspense>` with a dark
+  full-viewport fallback that matches the stage background, so
+  the chunk-load transition is invisible. Landing now ships
+  pixi-free.
+- `pnpm build` after the change:
+  - `index`           20.91 KB gzipped (entry, app shell + Landing)
+  - `react-vendor`    45.48 KB gzipped
+  - `pixi-vendor`    160.00 KB gzipped (cached separately)
+  - `Game`             4.99 KB gzipped (solo route)
+  - `MultiGame`        4.57 KB gzipped (multi route)
+  - `BattleLog`       23.63 KB gzipped (auto-split inside game route)
+  - **Landing first paint: 66.39 KB gzipped** (index + react-vendor).
+  - **`/game` total:  ~255 KB gzipped** — under the 300 KB §E3 ceiling
+    by ~45 KB. Down from 342.52 KB single-chunk on iter-99.
+  - No "dynamic import will not move module into another chunk"
+    warning. No "chunks larger than 500 kB" warning. Build is clean.
+- Verified with `pnpm test`: shared 79/79, server 21/21, client
+  193/193 — 293/293 green, no regressions.
+- ARCHITECTURE.md gained a "Client bundle strategy (§E3, S-520)"
+  section documenting the three-layer split + the route-level
+  lazy-load + the acceptance numbers.

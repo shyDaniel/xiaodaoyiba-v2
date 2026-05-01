@@ -1,7 +1,6 @@
 // @xdyb/client — top-level app shell.
 //
-// Iteration S-324: replaces the bare `<GamePage />` mount with a real
-// state-driven router:
+// State-driven router:
 //
 //   • No room joined            → <LandingPage> (nickname + create / join)
 //   • In room, snapshot.phase=='LOBBY' → <LobbyPage> (player list, addBot, 开战)
@@ -10,15 +9,36 @@
 //     fallback so the page is still demonstrable when the server is offline)
 //
 // The "router" is plain conditional rendering keyed off the Zustand store +
-// a local `solo` flag — adding react-router for three states is overkill
-// and the cold-load path is zero-config.
+// a local `solo` flag — adding react-router for three states is overkill.
+//
+// §E3 bundle-size gate (S-520): GamePage and MultiGamePage transitively
+// pull in the entire PixiJS canvas tree (GameStage + Character + House +
+// ... + pixi.js itself, ~250 KB gzipped). LandingPage doesn't need any
+// of that, so we hoist the canvas-bearing routes behind React.lazy. The
+// landing chunk ships pixi-free; the canvas chunks load only when the
+// user actually enters a game (solo or multiplayer). The Suspense
+// fallback paints a single dark rectangle that matches the stage
+// background so the chunk-load transition is invisible to the eye.
 
-import { useState } from 'react';
-import { GamePage } from './pages/Game.js';
+import { lazy, Suspense, useState } from 'react';
 import { LandingPage } from './pages/Landing.js';
 import { LobbyPage } from './pages/Lobby.js';
-import { MultiGamePage } from './pages/MultiGame.js';
 import { useGameStore } from './store/gameStore.js';
+
+const GamePage = lazy(() =>
+  import('./pages/Game.js').then((m) => ({ default: m.GamePage })),
+);
+const MultiGamePage = lazy(() =>
+  import('./pages/MultiGame.js').then((m) => ({ default: m.MultiGamePage })),
+);
+
+// Minimal dark fallback so the canvas chunk transition is invisible —
+// the chunk is small enough on a warm cache that this almost never
+// paints, but if it does the user sees the same dark stage background
+// that's about to land, not a flash of white.
+function CanvasLoading(): JSX.Element {
+  return <div style={{ width: '100vw', height: '100vh', background: '#0b0d12' }} />;
+}
 
 export function App(): JSX.Element {
   const [solo, setSolo] = useState(false);
@@ -26,7 +46,11 @@ export function App(): JSX.Element {
   const snapshot = useGameStore((s) => s.snapshot);
 
   if (solo) {
-    return <GamePage onExit={() => setSolo(false)} />;
+    return (
+      <Suspense fallback={<CanvasLoading />}>
+        <GamePage onExit={() => setSolo(false)} />
+      </Suspense>
+    );
   }
 
   if (!code || !snapshot) {
@@ -38,5 +62,9 @@ export function App(): JSX.Element {
   }
 
   // PLAYING or ENDED — both render on the canvas surface.
-  return <MultiGamePage />;
+  return (
+    <Suspense fallback={<CanvasLoading />}>
+      <MultiGamePage />
+    </Suspense>
+  );
 }
