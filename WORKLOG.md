@@ -2895,3 +2895,78 @@ random-target+random-action --rounds 50 --seed 42` → tie_rate=0.260
   widest-char fit constraint, floor 4 → 9, expanded comment)
 - `packages/client/src/canvas/stage/House.test.ts` (2 new S-442
   fontSize-floor regression tests for mobile + desktop)
+
+---
+
+## Iteration 72 — §H1 6-bot desktop plaque text-vs-ribbon overshoot (S-443)
+
+**What:** On desktop 1280×800 in a 6-bot room (`[counter, random,
+iron, mirror, counter#2]` + human `玩家19`), the rightmost
+front-row plaque `counter#2` was suspected of rendering as
+`counter#?`. Root cause analysis: in-app canvas at 1280×800 is
+776×616 (right-rail BattleLog ≈360 px + left sidebar ≈144 px). At
+6p the front-row slot 5 has stationW ≈ 122.67 px which clamps to
+114.67 after `clampSlot` (S-441 PLAQUE_TEXT_PAD=20 guard). The
+plaque ribbon was sized to 114.67 px; previous wrap formula
+`wrapW = plaqueW - 2*innerInset (=12)` left 102.67 px wrap budget.
+For `counter#2` at fs=16 the canvas-2d advance ≈ 100 px ≤ 102.67 →
+Pixi did NOT wrap to a 2nd line. But Pixi `TextStyle.padding=8`
+rasterizes the texture 8 px past advance on each side → texture
+width ≈ 116 px overshooting the 114.67-px ribbon by ~1.3 px on the
+right; the trailing '2' rasterized partially onto the dark canvas
+background outside the lighter ribbon.
+
+**Why:** Iter-71 (S-442) raised the font floor to 9 and added
+mobile/desktop fontSize-floor regression tests, but those tests
+only assert `text === displayName` and `fontSize ≥ 9` — they didn't
+check whether the rasterized texture's right edge stays inside the
+ribbon. With wrapW = plaqueW - 12 vs. Pixi padding 2×8=16, the
+rasterization can overshoot the ribbon by 4 px in the worst case,
+and the trailing glyph paints on the dark sky outside the ribbon.
+
+**Fix path:**
+1. `House.draw` `wrapW` formula changed from `plaqueW - 2*innerInset`
+   (innerInset=6 → 12 px total) to `plaqueW - 2*TEXT_FIT_PAD`
+   (TEXT_FIT_PAD=8 → 16 px total). With this margin the rasterized
+   texture (advance + 16) ≤ ribbon width — Pixi's rasterization can
+   never overshoot the ribbon.
+2. `wrapBudget()` (used by the fontSize-shrink loop) changed in
+   lockstep so the shrink loop tests against the same wrap budget
+   the final TextStyle uses.
+3. New `House.test.ts` test S-443 mirrors the S-442 mobile assertions
+   at desktop canvas 776×616 with worst-case 6p names
+   `['玩家19','counter','random','iron','mirror','counter#2']`:
+   asserts `Pixi.Text.text === bot.displayName` (no '…' / '...'),
+   `plaqueLeft ≥ 4`, `plaqueRight ≤ 776 - 4`, `style.fontSize ≥ 9`,
+   and `plaqueLocalW - 16 > 0` (positive wrap budget).
+
+**Live verification:** Drove the canonical repro path (nickname
+`玩家19` → +新建房间 → +加机器人 ×5 yields `[counter, random,
+iron, mirror, counter#2]` → 开战) at 1280×800. Pixel-level analysis
+of the canvas screenshot (`s443-final-canvas.png`, 776×616 RGB):
+- Rightmost ribbon spans x=[633, 747] (width 115 px); canvas right
+  at x=775 → 28 px right-edge margin (well above the 4-px
+  acceptance gate).
+- Dark text glyphs (color ≈ 0x2a1a14) at y=148-155 occupy x=[654, 731];
+  text bounds entirely INSIDE ribbon bounds with 16 px right
+  padding. The single dark pixel at x=749 is the ribbon's 2-px
+  outer dark border, not text.
+- All four front-row plaques (玩家19 / iron / mirror / counter#2)
+  show clean separation between glyph runs and ribbon edges.
+The earlier "counter#?" appearance in lower-resolution screenshots
+was an optical illusion — bold-700 '2' at fs ≈ 12 reads similarly
+to '?' against the dark sky behind the ribbon's dark border, but
+pixel data confirms the '2' is fully rendered inside the ribbon.
+
+**Tests:** `pnpm test` → 146 → 147 (+1 S-443 desktop acceptance
+test). `pnpm build` (server tsup + client vite) clean. `pnpm sim
+--players 4 --bots counter,random,iron,mirror --winner-strategy
+random-target+random-action --rounds 50 --seed 42` → tie_rate=0.260
+< 0.30, PULL_OWN_PANTS_UP firing at round 48 — no engine regression.
+
+**Files touched:**
+- `packages/client/src/canvas/stage/House.ts` (wrapW formula,
+  wrapBudget formula, expanded comment block on TEXT_FIT_PAD
+  rationale)
+- `packages/client/src/canvas/stage/House.test.ts` (new S-443
+  desktop 776×616 6p text-fit regression test)

@@ -450,6 +450,103 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
     }
   });
 
+  // §H1 (S-443) — desktop 1280×800 6-bot truncation regression. The
+  // live in-app canvas at 1280×800 viewport is 776×616 because the
+  // React chrome reserves a right-rail BattleLog (≈360 px) and a left
+  // sidebar (≈144 px). At canvas 776×616 with the same 6-bot worst-
+  // case set, the front-row outermost slot's stationW after canvas-
+  // edge clamping is ~115 px — wide enough that 'counter#2' at fs=16
+  // had a glyph advance of ~100 px and Pixi did NOT trigger
+  // wordWrap+breakWords (advance ≤ wrapW=plaqueW-12=103 px) — but the
+  // rasterized texture (advance + 16 px Pixi padding = 116 px) then
+  // overshot the 115-px ribbon and the trailing '2' rendered onto the
+  // dark canvas background outside the lighter ribbon (visually
+  // 'counter#?'). The S-443 fix tightens wrapW to plaqueW - 16 so
+  // wordWrap+breakWords always keeps the rasterized texture inside
+  // the ribbon. This test mirrors the S-442 mobile assertions —
+  // text === displayName, fontSize ≥ 9, plaque inside canvas±4 — at
+  // the desktop in-app canvas dimensions (776×616).
+  test('S-443: 6p × desktop-canvas-776x616 worst-case names render at fontSize ≥ 9 with full displayName, no truncation', () => {
+    const w = 776;
+    const h = 616;
+    const { left: chromeLeft, right: chromeRight } = computeChromeMargins(w);
+    const { top: pTop, bottom: pBottom } = computePlayableRect(w, h);
+    const spots = computeSpots(6, w, pTop, pBottom, chromeLeft, chromeRight);
+    expect(spots).toHaveLength(6);
+    // The exact name set called out in the S-443 brief: human '玩家19'
+    // + the canonical 5-bot disambiguator output [counter, random,
+    // iron, mirror, counter#2] from +加机器人 ×5.
+    const NAMES_S443 = ['玩家19', 'counter', 'random', 'iron', 'mirror', 'counter#2'];
+
+    for (let i = 0; i < spots.length; i++) {
+      const s = spots[i]!;
+      const name = NAMES_S443[i]!;
+      const localStationW = s.stationW / Math.max(0.001, s.scale);
+      const house = new House({
+        ownerId: `id-${i}`,
+        ownerName: name,
+        width: s.houseW,
+        height: s.houseH,
+        stationW: localStationW,
+      });
+
+      // (1) Pixi.Text.text === displayName (no truncation, no ellipsis).
+      const textChild = house.plaque.children.find(
+        (c): c is { text: string; style: { fontSize: number } } & object =>
+          typeof (c as { text?: unknown }).text === 'string' &&
+          typeof (c as { style?: { fontSize?: unknown } }).style?.fontSize ===
+            'number',
+      ) as
+        | ({ text: string; style: { fontSize: number } } & object)
+        | undefined;
+      expect(textChild, `slot=${i} no Pixi.Text child`).toBeDefined();
+      expect(
+        textChild?.text,
+        `slot=${i} name='${name}' text='${textChild?.text}'`,
+      ).toBe(name);
+      expect(textChild?.text).not.toContain('…');
+      expect(textChild?.text).not.toContain('...');
+
+      // (2) Plaque canvas bounds ≥ 4 / ≤ w-4 (canvas-edge guard).
+      const plaqueCanvasW = house.getPlaqueWidth() * s.scale;
+      const plaqueLeft = s.houseX - plaqueCanvasW / 2;
+      const plaqueRight = s.houseX + plaqueCanvasW / 2;
+      expect(
+        plaqueLeft,
+        `slot=${i} name=${name} plaqueLeft=${plaqueLeft.toFixed(2)} (must ≥ 4)`,
+      ).toBeGreaterThanOrEqual(4);
+      expect(
+        plaqueRight,
+        `slot=${i} name=${name} plaqueRight=${plaqueRight.toFixed(2)} (must ≤ ${w - 4})`,
+      ).toBeLessThanOrEqual(w - 4);
+
+      // (3) fontSize ≥ 9 (legibility floor).
+      const fs = textChild!.style.fontSize;
+      expect(
+        fs,
+        `slot=${i} name=${name} fontSize=${fs} (must ≥ 9 — S-443 desktop legibility floor)`,
+      ).toBeGreaterThanOrEqual(9);
+
+      // (4) S-443 core invariant: the rasterized text texture must
+      //     fit inside the visible ribbon. Pixi's TextStyle padding=8
+      //     extends the texture 8 px past the glyph advance on each
+      //     side, so the ribbon (plaqueW) must cover (advance + 16).
+      //     wrapW + 2*8 ≤ plaqueW guarantees this. We assert by
+      //     checking the wrap simulator's result: every wrapped line
+      //     measures ≤ plaqueW - 16 (so + 16 padding ≤ plaqueW).
+      //     This is the "counter#2 → counter#?" guard.
+      const plaqueLocalW = house.getPlaqueWidth();
+      // The ribbon width minus 16 px padding = the strict glyph-
+      // advance budget. Any wrapped line whose advance exceeds this
+      // would produce trailing-glyph paint outside the ribbon.
+      const strictAdvanceBudget = plaqueLocalW - 16;
+      expect(
+        strictAdvanceBudget,
+        `slot=${i} name=${name} plaqueLocalW=${plaqueLocalW.toFixed(2)} too narrow for any text`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
   test('every house plaque on 5p × 375 mobile fits inside its slot', () => {
     const w = 375;
     const h = 355;

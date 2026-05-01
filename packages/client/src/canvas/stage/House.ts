@@ -415,14 +415,22 @@ export class House {
       return max;
     };
     let fontSize = 16;
-    // The wrap area available to the rasterized text after subtracting
-    // the ribbon's inner inset (12 px total — 6 px each side from the
-    // innerInset constant below) and TextStyle padding margins.
+    // The wrap area available to the rasterized text. Must match the
+    // `wrapW` derivation below: ribbon width minus 2× TEXT_FIT_PAD
+    // (8 px each side, the Pixi TextStyle `padding: 8` rasterization
+    // overshoot). With this margin, the RASTERIZED texture (which is
+    // glyph advance + 16 px) fits inside the visible ribbon — fixing
+    // the §H1 (S-443) desktop 'counter#2' → 'counter#?' truncation
+    // where wrapW = plaqueW - 12 was just barely wide enough that
+    // Pixi did NOT wrap (advance ~100 px ≤ wrapW ~103 px) but the
+    // texture (~116 px) overshot the 115-px ribbon and the trailing
+    // glyph rendered onto the dark canvas background outside the
+    // lighter ribbon — visually a "truncation" though the .text was
+    // intact. wrapBudget is the worst-case (slot-cap) wrap width
+    // used by the fontSize-shrink loop.
+    const TEXT_FIT_PAD = 8;
     const wrapBudget = (): number => {
-      // The constraint must match the wrapW computed below. Use the
-      // canvas-space cap (which was already reconciled with stationW)
-      // minus the same insets.
-      return Math.max(20, cap - 24 - 16);
+      return Math.max(20, cap - 2 * TEXT_FIT_PAD);
     };
     while (
       Math.ceil(widestCharW(namePool, fontSize)) > wrapBudget() &&
@@ -471,12 +479,15 @@ export class House {
       plaqueW = Math.max(180, minRibbon);
     }
 
-    // wordWrapWidth: the Pixi.Text inner content area, leaving 6 px
-    // of horizontal inset between glyphs and ribbon edge. We measure
-    // the wrapped text's actual rendered width via CanvasTextMetrics
-    // and let the ribbon height stretch to fit the line count.
-    const innerInset = 6;
-    const wrapW = Math.max(20, plaqueW - 2 * innerInset);
+    // wordWrapWidth: subtract 2× TEXT_FIT_PAD so the rasterized
+    // texture (glyph advance + 2× Pixi TextStyle padding) fits inside
+    // the visible ribbon. §H1 (S-443) — fixes the desktop 'counter#2'
+    // truncation where the previous wrapW = plaqueW - 12 left only
+    // 6 px of margin per side, less than Pixi's 8-px texture overshoot,
+    // so on a 115-px ribbon the trailing '2' rasterized at x≈[100, 116]
+    // and ended up painted on the dark canvas background past the
+    // ribbon's right edge (visually invisible / "counter#?").
+    const wrapW = Math.max(20, plaqueW - 2 * TEXT_FIT_PAD);
 
     // Compute how many lines the wrap will produce by greedy
     // character-break simulation matching Pixi's breakWords behaviour.
