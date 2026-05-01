@@ -12,10 +12,21 @@ import {
 } from 'pixi.js';
 import { palette, playerColor } from '../../palette.js';
 
-/** Greedy character-break wrap matching Pixi's `breakWords: true`
- *  behaviour. Returns the list of lines the text will rasterize as,
- *  given a measured-width function (so jsdom + browser take the same
- *  code path). §H1 (S-438). */
+/** Token-aware wrap. Splits text into "tokens" — runs of identical
+ *  break-class — where:
+ *    • CJK chars are each their own token (breakable on either side)
+ *    • Latin word chars (a-zA-Z0-9_) cluster into a single token
+ *      (NEVER broken mid-word — that's the §H1 (S-447) acceptance
+ *      criterion: 'counter#2' must NOT split as 'co/unter/#2')
+ *    • Non-word ASCII (#, -, _, /, ., +, ' ', etc.) is each its own
+ *      token (break point allowed AFTER the punctuation)
+ *
+ *  Greedy-fit tokens onto lines such that no line's measured width
+ *  exceeds `wrapW`. If a single Latin word-token alone exceeds
+ *  `wrapW`, the caller is responsible for shrinking fontSize first
+ *  (or, as a last resort, ellipsizing) — this function does NOT
+ *  break mid-word. Returns the list of lines.
+ *  §H1 (S-447). */
 function wrapTextToWidth(
   text: string,
   wrapW: number,
@@ -23,22 +34,55 @@ function wrapTextToWidth(
   measureW: (s: string, fs: number) => number,
 ): string[] {
   if (text.length === 0) return [''];
-  // Honour explicit newlines first, then greedy-wrap each segment.
-  const segments = text.split('\n');
+  const isWord = (ch: string): boolean => /[A-Za-z0-9_]/.test(ch);
+  const isCJK = (ch: string): boolean => {
+    const code = ch.charCodeAt(0);
+    return (
+      (code >= 0x3000 && code <= 0x9fff) ||
+      (code >= 0xff00 && code <= 0xffef)
+    );
+  };
   const out: string[] = [];
+  // Honour explicit newlines first, then token-wrap each segment.
+  const segments = text.split('\n');
   for (const seg of segments) {
     if (seg.length === 0) {
       out.push('');
       continue;
     }
-    let cur = '';
+    // Tokenize: each CJK char and each non-word ASCII is its own
+    // token; consecutive Latin word chars cluster.
+    const tokens: string[] = [];
+    let buf = '';
     for (const ch of seg) {
-      const next = cur + ch;
-      if (cur.length > 0 && measureW(next, fontSize) > wrapW) {
-        out.push(cur);
-        cur = ch;
+      if (isCJK(ch) || !isWord(ch)) {
+        if (buf.length > 0) {
+          tokens.push(buf);
+          buf = '';
+        }
+        tokens.push(ch);
       } else {
-        cur = next;
+        buf += ch;
+      }
+    }
+    if (buf.length > 0) tokens.push(buf);
+
+    // Greedy-fit tokens. A token that ALONE overflows wrapW gets
+    // placed on its own line anyway (the line will overflow visually,
+    // but we never break the token mid-character — caller must
+    // shrink font or ellipsize to fix).
+    let cur = '';
+    for (const tok of tokens) {
+      const tentative = cur + tok;
+      if (cur.length === 0) {
+        cur = tok;
+        continue;
+      }
+      if (measureW(tentative, fontSize) <= wrapW) {
+        cur = tentative;
+      } else {
+        out.push(cur);
+        cur = tok;
       }
     }
     if (cur.length > 0 || out.length === 0) out.push(cur);
@@ -406,11 +450,50 @@ export class House {
     // touch the ribbon edge — wordWrap still emits a single char
     // per line, so the texture cannot exceed the ribbon horizontally
     // by more than the 8-px PLAQUE_TEXT_PAD already accounted for).
-    const widestCharW = (str: string, fs: number): number => {
-      let max = 0;
+    // §H1 (S-447) — segment-aware longest-token measurement. The
+    // shrink loop below shrinks fontSize until the LONGEST INDIVIDUAL
+    // word-token (the units our wrapTextToWidth refuses to break
+    // mid-character) fits inside the wrap budget. For 'counter#2'
+    // tokenized as ['counter', '#', '2'], the longest token is
+    // 'counter' (7 chars). For '玩家72' tokenized as ['玩','家','7','2']
+    // (CJK each-own, Latin clustered into '72'), the longest is '72'
+    // — but at the smallest CJK widths so this floors gracefully.
+    //
+    // We use the inflated measure (matches the eventual wrap budget)
+    // so the shrink decision lines up with the wrap decision.
+    const FONT_FALLBACK_INFLATION = 1.2;
+    const measureInflated = (s: string, fs: number): number =>
+      Math.ceil(measurePixiTextW(s, fs) * FONT_FALLBACK_INFLATION);
+    const isWordChar = (ch: string): boolean => /[A-Za-z0-9_]/.test(ch);
+    const isCJKChar = (ch: string): boolean => {
+      const code = ch.charCodeAt(0);
+      return (
+        (code >= 0x3000 && code <= 0x9fff) ||
+        (code >= 0xff00 && code <= 0xffef)
+      );
+    };
+    const tokenize = (str: string): string[] => {
+      const out: string[] = [];
+      let buf = '';
       for (const ch of str) {
-        const wch = measurePixiTextW(ch, fs);
-        if (wch > max) max = wch;
+        if (isCJKChar(ch) || !isWordChar(ch)) {
+          if (buf.length > 0) {
+            out.push(buf);
+            buf = '';
+          }
+          out.push(ch);
+        } else {
+          buf += ch;
+        }
+      }
+      if (buf.length > 0) out.push(buf);
+      return out;
+    };
+    const longestTokenW = (str: string, fs: number): number => {
+      let max = 0;
+      for (const tok of tokenize(str)) {
+        const w = measureInflated(tok, fs);
+        if (w > max) max = w;
       }
       return max;
     };
@@ -429,12 +512,27 @@ export class House {
     // intact. wrapBudget is the worst-case (slot-cap) wrap width
     // used by the fontSize-shrink loop.
     const TEXT_FIT_PAD = 8;
+    const PADDING_GUARD = 4;
     const wrapBudget = (): number => {
-      return Math.max(20, cap - 2 * TEXT_FIT_PAD);
+      return Math.max(8, cap - 2 * TEXT_FIT_PAD - 2 * PADDING_GUARD);
     };
+    // §H1 (S-447) two-stage shrink:
+    //   Stage 1 (preferred): shrink until the longest token fits
+    //   inside wrapBudget at fontSize ≥ 9. If we hit that, the
+    //   wrapTextToWidth call below will produce one line (or a
+    //   line-per-CJK-char) with NO mid-word break.
+    //   Stage 2 (fallback): if even at fs=9 the longest token still
+    //   exceeds the budget, drop the floor to 6 — better small-but-
+    //   readable text than a mid-word break.
     while (
-      Math.ceil(widestCharW(namePool, fontSize)) > wrapBudget() &&
+      longestTokenW(namePool, fontSize) > wrapBudget() &&
       fontSize > 9
+    ) {
+      fontSize -= 1;
+    }
+    while (
+      longestTokenW(namePool, fontSize) > wrapBudget() &&
+      fontSize > 6
     ) {
       fontSize -= 1;
     }
@@ -523,23 +621,66 @@ export class House {
     // wrapTextToWidth uses `wrapW - 2*PADDING_GUARD` as the per-line
     // budget so even with measurement drift between jsdom heuristic
     // and live Pixi advance, the rasterized texture stays inside
-    // the ribbon with ≥ 4 px slack on each side.
-    const PADDING_GUARD = 4;
+    // the ribbon with ≥ 4 px slack on each side. PADDING_GUARD and
+    // measureInflated (with FONT_FALLBACK_INFLATION = 1.2) were
+    // hoisted above the shrink loop in S-447 so the shrink decision
+    // and the wrap decision share the same advance measurement.
     const lineBudget = Math.max(8, wrapW - 2 * PADDING_GUARD);
-    // §H1 (S-445) — Live Pixi 8 bold-700 PingFang fallback renders
-    // wider than CanvasTextMetrics.measureText reports. Without
-    // this safety factor, 'counter#2' measures 81 px (so wraps don't
-    // fire at lineBudget=91 px) but rasterizes ~104 px wide, with the
-    // trailing '2' glyph crashing into the ribbon's right brown
-    // border at desktop canvas 776×616 slot 5 (verdict iter-75).
-    // Applying a 1.20 inflation to the measured advance lifts
-    // counter#2 from 81→97 px (exceeds 91 px lineBudget, wrap fires:
-    // counter#\n2) while keeping shorter labels like 'counter' (62→74
-    // ≤ 78 px lineBudget) and 'random' on a single line.
-    const FONT_FALLBACK_INFLATION = 1.2;
-    const measureInflated = (s: string, fs: number): number =>
-      Math.ceil(measurePixiTextW(s, fs) * FONT_FALLBACK_INFLATION);
-    const wrappedLines = wrapTextToWidth(namePool, lineBudget, fontSize, measureInflated);
+    // §H1 (S-447) — token-aware wrapTextToWidth. Tokenizes the name
+    // into CJK-each-own / Latin-word-clustered / punctuation-each-own
+    // tokens and greedy-fits whole tokens onto each line. NEVER
+    // breaks mid-Latin-word: 'counter#2' becomes 'counter#\n2' (or
+    // 'counter\n#2' / 'counter#2' depending on budget) but never
+    // 'co/unter/#2' (the iter77 §H1 mid-word regression).
+    let wrappedLines = wrapTextToWidth(namePool, lineBudget, fontSize, measureInflated);
+    // §H1 (S-447) — last-resort ellipsis when even at the lowered
+    // fontSize floor of 6 the longest token still exceeds lineBudget.
+    // The acceptance brief explicitly prefers single-ellipsis
+    // truncation ('cou…#2') to a mid-word wrap.
+    const overflowing = wrappedLines.some(
+      (line) => measureInflated(line, fontSize) > lineBudget,
+    );
+    if (overflowing) {
+      // Strategy: keep the FIRST token in full, replace overflowing
+      // tail tokens with '…'. This preserves the most identifying
+      // chars (the start of the name) while giving the user a clear
+      // visual cue that more text exists beyond the ellipsis.
+      const tokens = tokenize(namePool);
+      let acc = '';
+      let head = '';
+      for (const tok of tokens) {
+        const tentative = acc + tok + '…';
+        if (measureInflated(tentative, fontSize) <= lineBudget) {
+          acc += tok;
+          head = acc;
+        } else {
+          break;
+        }
+      }
+      // Edge case: not even the first token + '…' fits. Drop chars
+      // off the head until 'X…' fits, where X is at least one char.
+      if (head.length === 0) {
+        // Take prefix chars from the first token until they + '…' fit.
+        const firstTok = tokens[0] ?? namePool;
+        let prefix = '';
+        for (const ch of firstTok) {
+          const tentative = prefix + ch + '…';
+          if (measureInflated(tentative, fontSize) <= lineBudget) {
+            prefix += ch;
+          } else {
+            break;
+          }
+        }
+        // Guarantee at least one char + '…' even if the budget is
+        // pathologically small; the layout's edge clamp ensures the
+        // plaque ribbon is at least 40 px so this branch fits.
+        if (prefix.length === 0 && firstTok.length > 0) {
+          prefix = firstTok[0]!;
+        }
+        head = prefix;
+      }
+      wrappedLines = [head + '…'];
+    }
     const wrappedText = wrappedLines.join('\n');
     const lineH = Math.ceil(fontSize * 1.15);
     // Ribbon height: enough to host every wrapped line plus 8 px

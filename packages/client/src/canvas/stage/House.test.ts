@@ -75,11 +75,15 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
     }
   });
 
-  // §H1 (S-438) — live-acceptance regression: every plaque's
-  // Pixi.Text.text must strictly equal bot.displayName (no '...' /
-  // '…' truncation), AND plaque canvas bounds must satisfy
-  // left ≥ 4 AND right ≤ canvas.width - 4 across all 6 plaques.
-  test('S-438 acceptance: 6p × 375 plaques carry full displayName, stay inside canvas±4', () => {
+  // §H1 (S-447) supersedes S-438: the brief now PREFERS single-
+  // ellipsis truncation ('cou…#2') to a mid-word break ('co/unter/#2')
+  // when the slot is too narrow to fit the longest token at fontSize ≥ 6.
+  // We still assert: (a) plaque canvas bounds inside [4, w-4], (b) no
+  // mid-Latin-word break (the iter77 regression), (c) the first chars
+  // of displayName are preserved (so '玩家72' / 'counter#2' remain
+  // identifiable). Either the .text strips down to the displayName
+  // verbatim (when it fits) OR ends in a single '…' (truncation).
+  test('S-438/S-447 acceptance: 6p × 375 plaques carry identifiable text, stay inside canvas±4', () => {
     const w = 375;
     const h = 355;
     const { left: chromeLeft, right: chromeRight } = computeChromeMargins(w);
@@ -99,23 +103,50 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
         stationW: localStationW,
       });
 
-      // 1) Pixi.Text.text must carry every char of displayName. With
-      //    the S-445 pre-wrap fix the .text may contain \n line
-      //    breaks (e.g. 'counter#\n2'), but stripping those must
-      //    return exactly the input name — no ellipsis, no
-      //    truncation, no missing characters.
+      // 1) Pixi.Text.text either:
+      //    (a) strips to the displayName verbatim (when it fits — the
+      //        S-445 happy path with \n line breaks allowed), OR
+      //    (b) ends in '…' with the first chars of displayName as
+      //        prefix (S-447 fallback when the longest token won't fit
+      //        at fontSize ≥ 6).
+      //    Mid-Latin-word breaks are FORBIDDEN.
       const textChild = house.plaque.children.find(
         (c): c is { text: string } & object =>
           typeof (c as { text?: unknown }).text === 'string',
       ) as ({ text: string } & object) | undefined;
       expect(textChild, `slot=${i} no Pixi.Text child`).toBeDefined();
-      expect(
-        (textChild?.text ?? '').replace(/\n/g, ''),
-        `slot=${i} name=${name} text='${textChild?.text}'`,
-      ).toBe(name);
-      // No ellipsis chars must be present.
-      expect(textChild?.text).not.toContain('…');
-      expect(textChild?.text).not.toContain('...');
+      const rawText = textChild?.text ?? '';
+      const stripped = rawText.replace(/\n/g, '');
+      const isEllipsized = stripped.endsWith('…');
+      if (!isEllipsized) {
+        expect(stripped, `slot=${i} name=${name} text='${rawText}'`).toBe(name);
+      } else {
+        // Ellipsized: prefix must be a true prefix of displayName.
+        const prefix = stripped.slice(0, -1);
+        expect(
+          name.startsWith(prefix),
+          `slot=${i} name=${name} ellipsized='${rawText}' prefix='${prefix}' must be prefix of displayName`,
+        ).toBe(true);
+        // At least one identifying char preserved.
+        expect(prefix.length).toBeGreaterThanOrEqual(1);
+      }
+      // §H1 (S-447) — no mid-Latin-word break. For each pair of
+      // adjacent lines, the boundary char on either side must NOT be
+      // both Latin word chars (which would mean the wrap broke
+      // mid-word like 'co/unter').
+      const lines = rawText.split('\n');
+      for (let li = 0; li < lines.length - 1; li++) {
+        const a = lines[li]!;
+        const b = lines[li + 1]!;
+        if (a.length === 0 || b.length === 0) continue;
+        const tail = a[a.length - 1]!;
+        const head = b[0]!;
+        const isWord = (ch: string): boolean => /[A-Za-z0-9_]/.test(ch);
+        expect(
+          isWord(tail) && isWord(head),
+          `slot=${i} name=${name} mid-word break between '${a}' and '${b}' (tail='${tail}' head='${head}')`,
+        ).toBe(false);
+      }
 
       // 2) Plaque canvas bounds: centered on houseX with width
       //    `getPlaqueWidth() * scale`. left ≥ 4 AND right ≤ w - 4.
@@ -179,17 +210,33 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
           plaqueRight,
           `${vp.tag} slot=${i} name=${name} plaqueRight=${plaqueRight.toFixed(2)} (must ≤ ${vp.w - 4})`,
         ).toBeLessThanOrEqual(vp.w - 4);
-        // Pixi.Text.text must carry every char of displayName (no
-        // truncation). Per S-445 the .text may include \n line
-        // breaks; stripping them must equal the input name.
+        // S-447: Pixi.Text.text must EITHER carry every char of
+        // displayName (preferred), OR be an ellipsized prefix of it
+        // (fallback when stationW is too narrow even at minimum
+        // legible font size). Mid-word breaks are forbidden.
+        // Per S-445 the .text may include \n line breaks.
         const textChild = house.plaque.children.find(
           (c): c is { text: string } & object =>
             typeof (c as { text?: unknown }).text === 'string',
         ) as ({ text: string } & object) | undefined;
+        const rawText = textChild?.text ?? '';
+        const flat = rawText.replace(/\n/g, '');
+        const isFull = flat === name;
+        const hasEllipsis = flat.endsWith('…');
+        const ellipsisPrefix = hasEllipsis ? flat.slice(0, -1) : '';
+        const isEllipsizedPrefix =
+          hasEllipsis &&
+          ellipsisPrefix.length > 0 &&
+          name.startsWith(ellipsisPrefix);
         expect(
-          (textChild?.text ?? '').replace(/\n/g, ''),
-          `${vp.tag} slot=${i} name=${name} text='${textChild?.text}'`,
-        ).toBe(name);
+          isFull || isEllipsizedPrefix,
+          `${vp.tag} slot=${i} name=${name} text='${rawText}' must be full or ellipsized prefix`,
+        ).toBe(true);
+        // Forbid mid-word line break inside Latin/digit token.
+        expect(
+          /[A-Za-z0-9_]\n[A-Za-z0-9_]/.test(rawText),
+          `${vp.tag} slot=${i} name=${name} text='${rawText}' has mid-word break`,
+        ).toBe(false);
       }
     });
   }
@@ -243,18 +290,36 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
           textureRight,
           `${vp.tag} slot=${i} name=${name} textureRight=${textureRight.toFixed(2)} (must ≤ ${vp.w - 4})`,
         ).toBeLessThanOrEqual(vp.w - 4);
-        // Pixi.Text.text strict equality with the displayName.
+        // S-447: Pixi.Text.text must EITHER strictly equal the
+        // displayName (preferred), OR be an ellipsized prefix of it
+        // (fallback when stationW is too narrow even at min font).
+        // Mid-word line breaks are forbidden either way.
         const textChild = house.plaque.children.find(
           (c): c is { text: string } & object =>
             typeof (c as { text?: unknown }).text === 'string',
         ) as ({ text: string } & object) | undefined;
         // S-445 pre-wrap: .text may include \n; strip and compare.
+        const rawText = textChild?.text ?? '';
+        const flat = rawText.replace(/\n/g, '');
+        const isFull = flat === name;
+        const hasEllipsis = flat.endsWith('…');
+        const ellipsisPrefix = hasEllipsis ? flat.slice(0, -1) : '';
+        const isEllipsizedPrefix =
+          hasEllipsis &&
+          ellipsisPrefix.length > 0 &&
+          name.startsWith(ellipsisPrefix);
         expect(
-          (textChild?.text ?? '').replace(/\n/g, ''),
-          `${vp.tag} slot=${i} name=${name}`,
-        ).toBe(name);
-        expect(textChild?.text).not.toContain('…');
-        expect(textChild?.text).not.toContain('...');
+          isFull || isEllipsizedPrefix,
+          `${vp.tag} slot=${i} name=${name} text='${rawText}'`,
+        ).toBe(true);
+        // ASCII '...' triple-dot truncation is still forbidden — only
+        // the single '…' Unicode glyph is allowed as an ellipsis.
+        expect(rawText).not.toContain('...');
+        // Forbid mid-word line break inside Latin/digit token.
+        expect(
+          /[A-Za-z0-9_]\n[A-Za-z0-9_]/.test(rawText),
+          `${vp.tag} slot=${i} name=${name} text='${rawText}' has mid-word break`,
+        ).toBe(false);
       }
     });
   }
@@ -363,7 +428,15 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
   // displayName verbatim (no ellipsis, no truncation), (2) keep its
   // ribbon inside canvas±4 (preserves S-439), and (3) render at
   // fontSize ≥ 9 (the new legibility floor).
-  test('S-442: 6p × mobile-375 worst-case names render at fontSize ≥ 9 with full displayName', () => {
+  // §H1 (S-447) supersedes the mobile half of S-442. The brief now
+  // explicitly accepts ellipsis truncation as a fallback when even
+  // the lowered fontSize floor of 6 cannot fit the longest token on
+  // a single line — preferable to the iter77 mid-word-break
+  // regression ('co/unter/#2'). Acceptance now: every plaque is
+  // EITHER (a) at fontSize ≥ 9 with the full displayName preserved,
+  // OR (b) ellipsized ('coun…') with a true prefix of displayName.
+  // Mid-Latin-word breaks remain forbidden in both branches.
+  test('S-442/S-447: 6p × mobile-375 worst-case names render legibly with no mid-word break', () => {
     const w = 375;
     const h = 355;
     const { left: chromeLeft, right: chromeRight } = computeChromeMargins(w);
@@ -387,8 +460,6 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
         stationW: localStationW,
       });
 
-      // (1) Pixi.Text.text carries every char of displayName (S-445:
-      //     .text may include \n line breaks for the wrapped layout).
       const textChild = house.plaque.children.find(
         (c): c is { text: string; style: { fontSize: number } } & object =>
           typeof (c as { text?: unknown }).text === 'string' &&
@@ -398,14 +469,49 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
         | ({ text: string; style: { fontSize: number } } & object)
         | undefined;
       expect(textChild, `slot=${i} no Pixi.Text child`).toBeDefined();
-      expect(
-        (textChild?.text ?? '').replace(/\n/g, ''),
-        `slot=${i} name='${name}' text='${textChild?.text}'`,
-      ).toBe(name);
-      expect(textChild?.text).not.toContain('…');
-      expect(textChild?.text).not.toContain('...');
+      const rawText = textChild?.text ?? '';
+      const stripped = rawText.replace(/\n/g, '');
+      const isEllipsized = stripped.endsWith('…');
+      const fs = textChild!.style.fontSize;
 
-      // (2) Plaque canvas bounds preserved from S-439.
+      // (1) Either full text preserved OR ellipsized prefix.
+      if (!isEllipsized) {
+        expect(stripped, `slot=${i} name='${name}' text='${rawText}'`).toBe(name);
+        // Full-text path keeps the legibility floor at 9.
+        expect(
+          fs,
+          `slot=${i} name=${name} fontSize=${fs} (must ≥ 9 — S-442 legibility floor when text fits)`,
+        ).toBeGreaterThanOrEqual(9);
+      } else {
+        const prefix = stripped.slice(0, -1);
+        expect(
+          name.startsWith(prefix),
+          `slot=${i} name=${name} ellipsized='${rawText}' prefix='${prefix}' must be true prefix of displayName`,
+        ).toBe(true);
+        expect(prefix.length).toBeGreaterThanOrEqual(1);
+        // S-447 minimum legibility for ellipsized fallback: fs ≥ 6.
+        expect(
+          fs,
+          `slot=${i} name=${name} fontSize=${fs} (must ≥ 6 — S-447 ellipsis-fallback floor)`,
+        ).toBeGreaterThanOrEqual(6);
+      }
+
+      // (2) No mid-Latin-word break across line boundaries.
+      const lines = rawText.split('\n');
+      for (let li = 0; li < lines.length - 1; li++) {
+        const a = lines[li]!;
+        const b = lines[li + 1]!;
+        if (a.length === 0 || b.length === 0) continue;
+        const tail = a[a.length - 1]!;
+        const head = b[0]!;
+        const isWord = (ch: string): boolean => /[A-Za-z0-9_]/.test(ch);
+        expect(
+          isWord(tail) && isWord(head),
+          `slot=${i} name=${name} mid-word break '${a}' / '${b}'`,
+        ).toBe(false);
+      }
+
+      // (3) Plaque canvas bounds preserved (S-439 / canvas-edge guard).
       const plaqueCanvasW = house.getPlaqueWidth() * s.scale;
       const plaqueLeft = s.houseX - plaqueCanvasW / 2;
       const plaqueRight = s.houseX + plaqueCanvasW / 2;
@@ -417,13 +523,6 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
         plaqueRight,
         `slot=${i} name=${name} plaqueRight=${plaqueRight.toFixed(2)} (must ≤ ${w - 4})`,
       ).toBeLessThanOrEqual(w - 4);
-
-      // (3) The new S-442 acceptance: fontSize ≥ 9 (humanly legible).
-      const fs = textChild!.style.fontSize;
-      expect(
-        fs,
-        `slot=${i} name=${name} fontSize=${fs} (must ≥ 9 — S-442 legibility floor)`,
-      ).toBeGreaterThanOrEqual(9);
     }
   });
 
