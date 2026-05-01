@@ -189,17 +189,38 @@ export class House {
     g.clear();
     if (this.hp >= 100) return;
     const cracks = Math.round((100 - this.hp) / 20);
-    // jagged dark lines on the wall
+    // jagged dark lines on the front-LEFT iso wall face. Cracks are
+    // projected through the same face-local basis the door + windows
+    // use: u along (leftBase → frontBase), v straight up. This keeps
+    // the cracks visibly anchored to the receding iso wall plane
+    // rather than floating in screen space (§K1 iso pass).
+    const w = this.opts.width;
+    const h = this.opts.height;
+    const bodyW = w * 0.78;
+    const bodyH = h * 0.55;
+    const pW = bodyW / 2 + 8;
+    const pH = pW * ISO_SIN;
+    const wallH = bodyH;
+    const leftBase = { x: -pW, y: 0 };
+    const frontBase = { x: 0, y: pH };
+    const proj = (u: number, v: number): { x: number; y: number } => {
+      const ux = (frontBase.x - leftBase.x) * u;
+      const uy = (frontBase.y - leftBase.y) * u;
+      return { x: leftBase.x + ux, y: leftBase.y + uy - v };
+    };
     for (let i = 0; i < cracks; i++) {
-      const x0 = -40 + i * 18;
-      const y0 = -40 - i * 4;
-      const points: number[] = [x0, y0];
-      let x = x0;
-      let y = y0;
+      const u0 = 0.2 + i * 0.13;
+      const v0 = wallH * 0.55 - i * wallH * 0.04;
+      const points: number[] = [];
+      let u = u0;
+      let v = v0;
+      const p0 = proj(u, v);
+      points.push(p0.x, p0.y);
       for (let s = 0; s < 5; s++) {
-        x += (i % 2 === 0 ? 1 : -1) * (4 + s);
-        y += 8;
-        points.push(x, y);
+        u += (i % 2 === 0 ? 0.012 : -0.012) * (1 + s * 0.4);
+        v -= wallH * 0.05;
+        const p = proj(u, v);
+        points.push(p.x, p.y);
       }
       g.poly(points).stroke({ color: 0x1a0000, width: 3 });
     }
@@ -212,12 +233,14 @@ export class House {
     const h = opts.height;
     const tint = playerColor(opts.ownerId);
 
-    // Anchor: bottom-center at (0,0)
-    // body
+    // Anchor: bottom-center at (0,0). bodyW / bodyH are the *iso footprint
+    // generators* — bodyW becomes the plinth diamond's full horizontal
+    // span, bodyH becomes the wall height (rise above the plinth top).
+    // The legacy bodyX / bodyY (top-left of a flat front-elevation rect)
+    // are no longer needed: the iso 3/4 box block below works in iso-
+    // diamond corner space (frontBase / rightBase / leftBase / *Top).
     const bodyW = w * 0.78;
     const bodyH = h * 0.55;
-    const bodyX = -bodyW / 2;
-    const bodyY = -bodyH;
 
     // ===== iso diamond foundation (§K1, S-467) =====
     // Anchor the house onto the iso ground plane with a 2:1 dimetric
@@ -270,99 +293,221 @@ export class House {
       -plinthHalfW, 0,
     ]).fill({ color: 0x14080a });
 
-    // wall shadow
-    g.rect(bodyX, bodyY, bodyW, bodyH).fill({ color: palette.houseWallShadow });
-    // wall front (slightly inset top)
-    g.rect(bodyX + 6, bodyY + 4, bodyW - 12, bodyH - 6).fill({ color: palette.houseWall });
-    // ===== iso side-skirt under the wall (§K1, S-467) =====
-    // A thin parallelogram strip on each side of the body that picks
-    // up the iso plinth's depth — gives the wall a visible left/right
-    // depth face matching the iso projection. Without this the wall
-    // reads as a perfectly-flat 2D billboard. With it, the eye picks
-    // up that the wall has a 30°-receding side and the whole house
-    // belongs to the iso world.
-    const sideDepth = 6;
-    // right face — recedes back-right (positive x, negative y)
-    g.poly([
-      bodyX + bodyW, bodyY + 4,
-      bodyX + bodyW + sideDepth, bodyY + 4 - sideDepth * ISO_SIN,
-      bodyX + bodyW + sideDepth, bodyY + bodyH - sideDepth * ISO_SIN,
-      bodyX + bodyW, bodyY + bodyH,
-    ]).fill({ color: palette.houseWallShadow });
-    // left face — recedes back-left (negative x, negative y)
-    g.poly([
-      bodyX, bodyY + 4,
-      bodyX - sideDepth, bodyY + 4 - sideDepth * ISO_SIN,
-      bodyX - sideDepth, bodyY + bodyH - sideDepth * ISO_SIN,
-      bodyX, bodyY + bodyH,
-    ]).fill({ color: 0x2a1814 });
+    // ===== iso 3/4 box body (§K1, S-497) =====
+    //
+    // Re-authored from a flat front-elevation rect+triangle (S-467) into
+    // a true iso 3/4 box. The body is now drawn through worldToScreen()
+    // basis vectors so front-right and front-left wall faces are visibly
+    // RECEDING parallelograms (not parallel-vertical), and the roof is
+    // a hipped iso roof with two visible slope faces meeting at a ridge
+    // apex above the centroid of the top diamond.
+    //
+    // Local coord system: bottom-center at (0,0). The plinth above
+    // defines the footprint diamond. Walls rise straight up by `wallH`
+    // pixels (height in screen-y); the top diamond is the same diamond
+    // shifted up by wallH. The two visible faces are:
+    //
+    //   • Front-right face: corners (front_base, right_base, right_top,
+    //     front_top). On screen: (0, +pH), (+pW, 0), (+pW, -wallH),
+    //     (0, +pH - wallH). Both horizontal edges slope up-right at the
+    //     iso angle (pH/pW = ISO_SIN = 0.5), so the face reads as a
+    //     parallelogram receding into depth.
+    //   • Front-left face: mirror — (left_base, front_base, front_top,
+    //     left_top) = (-pW, 0), (0, +pH), (0, +pH - wallH), (-pW, -wallH).
+    //
+    // The two back faces (right→back, back→left) are hidden behind the
+    // front faces, exactly like a Hades / Stardew iso building.
+    //
+    // Roof: hipped iso roof with a single ridge apex centered above the
+    // top diamond's centroid (which is itself at (0, -wallH) since the
+    // diamond is symmetric around the local x-axis at y=-wallH). The
+    // apex sits at (0, -wallH - roofH). Two visible slope faces:
+    //   • Front-right slope: triangle (front_top, right_top, apex)
+    //   • Front-left slope: triangle (front_top, left_top, apex)
+    // Both slopes are non-axis-aligned triangles — no edge is purely
+    // horizontal or vertical — so the roof reads as iso-projected
+    // (no head-on isoceles triangle).
+    const wallH = bodyH;
+    const pW = plinthHalfW;
+    const pH = plinthHalfH;
+    const frontBase = { x: 0, y: pH };
+    const rightBase = { x: pW, y: 0 };
+    const leftBase = { x: -pW, y: 0 };
+    const frontTop = { x: 0, y: pH - wallH };
+    const rightTop = { x: pW, y: -wallH };
+    const leftTop = { x: -pW, y: -wallH };
 
-    // roof — triangular with eave tinted by owner color. §K1 iso pass:
-    // the eave extends an extra `sideDepth` outward on each side and
-    // is offset upward by `sideDepth * ISO_SIN` so the eave's
-    // bottom edge runs PARALLEL to the iso side-faces below — the
-    // whole house silhouette now slants with the iso projection,
-    // matching the look of Stardew's roof eaves overhanging an iso
-    // wall. The right eave drops slightly (depth-receding side) and
-    // the left eave drops symmetrically, so the roof's underside
-    // line points into the iso vanishing geometry.
-    const roofTop = bodyY - h * 0.4;
-    const eaveOver = sideDepth + 8; // visible eave overhang
-    const eaveLift = sideDepth * ISO_SIN;
+    // Front-RIGHT wall face (the camera-right side, more in shadow).
     g.poly([
-      bodyX - eaveOver, bodyY + 6 - eaveLift,
-      bodyW / 2, roofTop,
-      bodyX + bodyW + eaveOver, bodyY + 6 - eaveLift,
+      frontBase.x, frontBase.y,
+      rightBase.x, rightBase.y,
+      rightTop.x, rightTop.y,
+      frontTop.x, frontTop.y,
+    ]).fill({ color: palette.houseWallShadow });
+    // Front-LEFT wall face (the camera-left side, lit — so paint with
+    // the lighter wall tone). This is the "primary" face that hosts
+    // the door + windows since iso scenes traditionally read better
+    // when the door is on the lit face.
+    g.poly([
+      leftBase.x, leftBase.y,
+      frontBase.x, frontBase.y,
+      frontTop.x, frontTop.y,
+      leftTop.x, leftTop.y,
+    ]).fill({ color: palette.houseWall });
+
+    // Roof apex above the centroid of the top diamond.
+    const roofH = h * 0.4;
+    const apex = { x: 0, y: -wallH - roofH };
+    // Front-right roof slope (darker = shadow side).
+    g.poly([
+      frontTop.x, frontTop.y,
+      rightTop.x, rightTop.y,
+      apex.x, apex.y,
     ]).fill({ color: palette.houseRoofShadow });
+    // Front-left roof slope (tinted by owner — the visible "team color"
+    // band, like a flag's house roof in Stardew co-op).
     g.poly([
-      bodyX - eaveOver + 4, bodyY + 4 - eaveLift,
-      bodyW / 2, roofTop + 6,
-      bodyX + bodyW + eaveOver - 4, bodyY + 4 - eaveLift,
+      leftTop.x, leftTop.y,
+      frontTop.x, frontTop.y,
+      apex.x, apex.y,
     ]).fill({ color: tint });
-    // roof tiles — horizontal bands
-    for (let i = 0; i < 4; i++) {
+    // Roof eave overhang: a thin parallelogram strip at the bottom of
+    // each roof slope, extending slightly past the wall edge so the
+    // roof visibly overhangs (Stardew's signature eave). Drawn as a
+    // narrow poly along each top wall edge, lifted by `eaveDrop`.
+    const eaveDrop = 4;
+    g.poly([
+      frontTop.x, frontTop.y + eaveDrop,
+      rightTop.x, rightTop.y + eaveDrop,
+      rightTop.x, rightTop.y - 2,
+      frontTop.x, frontTop.y - 2,
+    ]).fill({ color: palette.houseRoofShadow, alpha: 0.6 });
+    g.poly([
+      leftTop.x, leftTop.y + eaveDrop,
+      frontTop.x, frontTop.y + eaveDrop,
+      frontTop.x, frontTop.y - 2,
+      leftTop.x, leftTop.y - 2,
+    ]).fill({ color: tint, alpha: 0.5 });
+
+    // Ridge highlight: a darker line from the front apex projection
+    // down the ridge. Sells the "roof has a ridge" read.
+    g.moveTo(apex.x, apex.y);
+    g.lineTo(0, pH - wallH); // down to the front-top corner
+    g.stroke({ color: palette.houseRoofShadow, width: 2, alpha: 0.8 });
+
+    // Hipped roof horizontal bands (course lines along each slope).
+    // Painted on the front-LEFT slope only — the lit slope is where
+    // texture detail reads. Each band runs from the left-top edge
+    // toward the apex, parallel to the eave.
+    for (let i = 1; i <= 3; i++) {
       const t = i / 4;
-      const yLine = bodyY + 4 - (bodyY + 4 - (roofTop + 6)) * (1 - t);
-      const halfWAtT = (bodyW / 2 + 8) * (1 - t);
-      g.moveTo(bodyW / 2 - halfWAtT, yLine);
-      g.lineTo(bodyW / 2 + halfWAtT, yLine);
-      g.stroke({ color: palette.houseRoofShadow, width: 2, alpha: 0.55 });
+      // Interpolate two points: one along (leftTop → apex) and one
+      // along (frontTop → apex) at parameter t.
+      const px = leftTop.x + (apex.x - leftTop.x) * t;
+      const py = leftTop.y + (apex.y - leftTop.y) * t;
+      const qx = frontTop.x + (apex.x - frontTop.x) * t;
+      const qy = frontTop.y + (apex.y - frontTop.y) * t;
+      g.moveTo(px, py);
+      g.lineTo(qx, qy);
+      g.stroke({ color: palette.houseRoofShadow, width: 1.5, alpha: 0.45 });
     }
 
-    // chimney
-    const chimneyX = bodyX + bodyW * 0.65;
-    const chimneyY = roofTop + h * 0.18;
-    g.rect(chimneyX, chimneyY, 14, 28).fill({ color: palette.houseChimney });
-    g.rect(chimneyX - 2, chimneyY - 4, 18, 6).fill({ color: 0x2a1a14 });
+    // chimney — sits on the front-right slope, lifted above the roof.
+    // Position it at the right-top quarter of the ridge so it pokes
+    // out of the visible roof face (not hidden behind it).
+    const chimneyBaseX = rightTop.x * 0.45 + frontTop.x * 0.55;
+    const chimneyBaseY = rightTop.y * 0.45 + frontTop.y * 0.55 - 2;
+    const chimneyW = 14;
+    const chimneyH = 28;
+    g.rect(chimneyBaseX - chimneyW / 2, chimneyBaseY - chimneyH, chimneyW, chimneyH).fill({ color: palette.houseChimney });
+    g.rect(chimneyBaseX - chimneyW / 2 - 2, chimneyBaseY - chimneyH - 4, chimneyW + 4, 6).fill({ color: 0x2a1a14 });
 
-    // door
-    const doorW = bodyW * 0.22;
-    const doorH = bodyH * 0.55;
-    const doorX = bodyX + (bodyW - doorW) / 2;
-    const doorY = bodyY + bodyH - doorH;
-    g.rect(doorX - 3, doorY - 3, doorW + 6, doorH + 6).fill({ color: palette.houseDoorFrame });
-    g.rect(doorX, doorY, doorW, doorH).fill({ color: palette.houseDoor });
-    // door knob
-    g.circle(doorX + doorW - 6, doorY + doorH * 0.55, 2.5).fill({ color: palette.uiGold });
-    // door cross-plank
-    g.rect(doorX + 1, doorY + doorH * 0.5 - 1, doorW - 2, 2).fill({ color: palette.houseDoorFrame });
-
-    // two windows flanking the door
-    const winW = bodyW * 0.16;
-    const winH = bodyH * 0.22;
-    const winY = bodyY + bodyH * 0.22;
-    const drawWindow = (cx: number): void => {
-      g.rect(cx - winW / 2 - 3, winY - 3, winW + 6, winH + 6).fill({ color: palette.houseWindowFrame });
-      g.rect(cx - winW / 2, winY, winW, winH).fill({ color: palette.houseWindow });
-      // cross
-      g.rect(cx - 1, winY, 2, winH).fill({ color: palette.houseWindowFrame });
-      g.rect(cx - winW / 2, winY + winH / 2 - 1, winW, 2).fill({ color: palette.houseWindowFrame });
+    // ===== door on the front-LEFT wall face =====
+    // The door + windows are positioned on the LIT front-left wall poly.
+    // To keep them visually attached to the iso-skewed face, we project
+    // them in the face's local 2D basis: u-axis runs along the bottom
+    // edge (from leftBase → frontBase), v-axis runs straight up. A door
+    // centered on the face at (u=0.5, v=0) of width=doorW maps to a
+    // small parallelogram on screen, not an axis-aligned rect.
+    const faceProject = (
+      anchorBase: { x: number; y: number },
+      otherBase: { x: number; y: number },
+      u: number,
+      v: number,
+    ): { x: number; y: number } => {
+      const ux = (otherBase.x - anchorBase.x) * u;
+      const uy = (otherBase.y - anchorBase.y) * u;
+      return {
+        x: anchorBase.x + ux,
+        y: anchorBase.y + uy - v,
+      };
     };
-    drawWindow(bodyX + bodyW * 0.22);
-    drawWindow(bodyX + bodyW * 0.78);
+    // Door dimensions in face-local units. uHalf = 0.11 (door is ~22%
+    // of the face width). vBottom = 4 (lift just above ground), vTop =
+    // wallH * 0.55 (door is 55% of wall height).
+    const doorUHalf = 0.11;
+    const doorVBot = 4;
+    const doorVTop = wallH * 0.55;
+    const dBL = faceProject(leftBase, frontBase, 0.5 - doorUHalf, doorVBot);
+    const dBR = faceProject(leftBase, frontBase, 0.5 + doorUHalf, doorVBot);
+    const dTR = faceProject(leftBase, frontBase, 0.5 + doorUHalf, doorVTop);
+    const dTL = faceProject(leftBase, frontBase, 0.5 - doorUHalf, doorVTop);
+    // Door frame (slightly larger).
+    const fBL = faceProject(leftBase, frontBase, 0.5 - doorUHalf - 0.015, doorVBot - 2);
+    const fBR = faceProject(leftBase, frontBase, 0.5 + doorUHalf + 0.015, doorVBot - 2);
+    const fTR = faceProject(leftBase, frontBase, 0.5 + doorUHalf + 0.015, doorVTop + 4);
+    const fTL = faceProject(leftBase, frontBase, 0.5 - doorUHalf - 0.015, doorVTop + 4);
+    g.poly([fBL.x, fBL.y, fBR.x, fBR.y, fTR.x, fTR.y, fTL.x, fTL.y]).fill({ color: palette.houseDoorFrame });
+    g.poly([dBL.x, dBL.y, dBR.x, dBR.y, dTR.x, dTR.y, dTL.x, dTL.y]).fill({ color: palette.houseDoor });
+    // Door cross-plank (mid-height stripe).
+    const cBL = faceProject(leftBase, frontBase, 0.5 - doorUHalf + 0.005, doorVTop * 0.5 - 1);
+    const cBR = faceProject(leftBase, frontBase, 0.5 + doorUHalf - 0.005, doorVTop * 0.5 - 1);
+    const cTR = faceProject(leftBase, frontBase, 0.5 + doorUHalf - 0.005, doorVTop * 0.5 + 1);
+    const cTL = faceProject(leftBase, frontBase, 0.5 - doorUHalf + 0.005, doorVTop * 0.5 + 1);
+    g.poly([cBL.x, cBL.y, cBR.x, cBR.y, cTR.x, cTR.y, cTL.x, cTL.y]).fill({ color: palette.houseDoorFrame });
+    // Door knob — small dot at the right side of the door at half height.
+    const knob = faceProject(leftBase, frontBase, 0.5 + doorUHalf - 0.018, doorVTop * 0.55);
+    g.circle(knob.x, knob.y, 2.5).fill({ color: palette.uiGold });
 
-    // ground stoop
-    g.rect(doorX - 8, bodyY + bodyH - 4, doorW + 16, 6).fill({ color: 0x4a3424 });
+    // ===== two windows flanking the door on the front-LEFT face =====
+    const winUHalf = 0.08;
+    const winVBot = wallH * 0.62;
+    const winVTop = wallH * 0.84;
+    const drawWindow = (uCenter: number): void => {
+      const fBL2 = faceProject(leftBase, frontBase, uCenter - winUHalf - 0.012, winVBot - 3);
+      const fBR2 = faceProject(leftBase, frontBase, uCenter + winUHalf + 0.012, winVBot - 3);
+      const fTR2 = faceProject(leftBase, frontBase, uCenter + winUHalf + 0.012, winVTop + 3);
+      const fTL2 = faceProject(leftBase, frontBase, uCenter - winUHalf - 0.012, winVTop + 3);
+      g.poly([fBL2.x, fBL2.y, fBR2.x, fBR2.y, fTR2.x, fTR2.y, fTL2.x, fTL2.y]).fill({ color: palette.houseWindowFrame });
+      const wBL = faceProject(leftBase, frontBase, uCenter - winUHalf, winVBot);
+      const wBR = faceProject(leftBase, frontBase, uCenter + winUHalf, winVBot);
+      const wTR = faceProject(leftBase, frontBase, uCenter + winUHalf, winVTop);
+      const wTL = faceProject(leftBase, frontBase, uCenter - winUHalf, winVTop);
+      g.poly([wBL.x, wBL.y, wBR.x, wBR.y, wTR.x, wTR.y, wTL.x, wTL.y]).fill({ color: palette.houseWindow });
+      // Vertical mullion.
+      const mBot = faceProject(leftBase, frontBase, uCenter - 0.003, winVBot);
+      const mTop = faceProject(leftBase, frontBase, uCenter + 0.003, winVTop);
+      const mBot2 = faceProject(leftBase, frontBase, uCenter + 0.003, winVBot);
+      const mTop2 = faceProject(leftBase, frontBase, uCenter - 0.003, winVTop);
+      g.poly([mBot.x, mBot.y, mBot2.x, mBot2.y, mTop.x, mTop.y, mTop2.x, mTop2.y]).fill({ color: palette.houseWindowFrame });
+      // Horizontal sash.
+      const sMid = (winVBot + winVTop) / 2;
+      const sBL = faceProject(leftBase, frontBase, uCenter - winUHalf, sMid - 1);
+      const sBR = faceProject(leftBase, frontBase, uCenter + winUHalf, sMid - 1);
+      const sTR = faceProject(leftBase, frontBase, uCenter + winUHalf, sMid + 1);
+      const sTL = faceProject(leftBase, frontBase, uCenter - winUHalf, sMid + 1);
+      g.poly([sBL.x, sBL.y, sBR.x, sBR.y, sTR.x, sTR.y, sTL.x, sTL.y]).fill({ color: palette.houseWindowFrame });
+    };
+    drawWindow(0.25);
+    drawWindow(0.75);
+
+    // Ground stoop — a small iso-projected step in front of the door,
+    // sitting on the plinth top.
+    const stoopBL = faceProject(leftBase, frontBase, 0.5 - doorUHalf - 0.04, -2);
+    const stoopBR = faceProject(leftBase, frontBase, 0.5 + doorUHalf + 0.04, -2);
+    const stoopFR = { x: stoopBR.x + 4, y: stoopBR.y + 4 * ISO_SIN + 4 };
+    const stoopFL = { x: stoopBL.x - 4, y: stoopBL.y - 4 * ISO_SIN + 4 };
+    g.poly([stoopBL.x, stoopBL.y, stoopBR.x, stoopBR.y, stoopFR.x, stoopFR.y, stoopFL.x, stoopFL.y]).fill({ color: 0x4a3424 });
 
     // name plaque — width auto-sized to the rendered nameplate so long
     // strategy names ('counter', 'random', 'mirror', 'counter#2') do
@@ -395,7 +540,11 @@ export class House {
     // .text remains exactly equal to bot.displayName (no ellipsis,
     // no truncation), satisfying the acceptance contract.
     this.plaque.removeChildren();
-    const plaqueY = roofTop - 32;
+    // Plaque sits above the roof apex. With the iso 3/4 box, the apex
+    // is at (0, -wallH - roofH); add a 32-px clearance above it for
+    // the ribbon. Equivalent to the prior `roofTop - 32` formula —
+    // the apex is now the visible top of the silhouette.
+    const plaqueY = -wallH - roofH - 32;
     const namePool = opts.ownerName ?? '';
     const fontFamily =
       'ui-sans-serif, "PingFang SC", "Microsoft YaHei", sans-serif';

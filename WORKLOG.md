@@ -3423,3 +3423,43 @@ CHOP both felt flat at default scale.
 - `packages/client/src/canvas/EffectPlayer.ts` (+47 / −15 net)
 - `packages/client/src/canvas/camera/camera.test.ts` (+86 / 0)
 - `packages/client/src/canvas/GameStage.tsx` (+8 / 0)
+
+---
+
+## Iteration 94 — §K1 iso 3/4 box house bodies (S-497)
+
+**What:** Re-authored `House.ts` wall + roof geometry. Pre-S-497 the
+house body painted a flat front-elevation rectangle wall + head-on
+isoceles triangle roof on top of the iso plinth diamond — judge
+iter-94 screenshot confirmed: all four house roofs faced camera
+head-on, walls were `g.rect()` parallel-vertical with only a 6 px
+sideDepth accent strip. S-497 replaces that block with a true iso
+3/4 box: front-right + front-left wall faces are receding
+parallelograms whose corners come from the same iso-diamond basis as
+the plinth (`frontBase`/`rightBase`/`leftBase` × `wallH`-lifted
+top), and the roof has two visible slope triangles meeting at a
+ridge apex above the centroid of the top diamond. Door / windows /
+cracks / stoop are now projected through a face-local (u, v) basis
+along the lit front-left wall so they visibly attach to the iso
+wall plane (no more axis-aligned door rectangles floating in front
+of an iso building).
+
+**Files touched:**
+- `packages/client/src/canvas/stage/House.ts` (+170 / −95 net)
+- `packages/client/src/canvas/stage/iso-projection.test.ts` (+180 / 0)
+
+**Verification:**
+- `pnpm test` — shared 79/79, server 21/21, client **169/169**
+  (was 166; +3 §K1 S-497 wall/roof tests). 269 total green.
+- `pnpm build` — gzipped client `index.js` = 178.59 KB (within 300 KB
+  budget).
+- Live Playwright probe at 1280×800 solo init (4-player room):
+  `iso-house-s497-solo.png` captures all four houses rendering as
+  iso 3/4 boxes — visible front-right + front-left wall slopes
+  receding into depth, roof shows two slope faces (lit team-tinted
+  slope on the left, dark `houseRoofShadow` slope on the right)
+  meeting at a ridge apex. Compare to baseline `judge-iter94-solo-
+  init.png`: previously the roofs all faced camera head-on as flat
+  triangles. Now the silhouette reads as a 3D volume — Hades /
+  Stardew 3/4 iso box look.
+
