@@ -68,31 +68,198 @@ function isIsoDiamond(pts: number[]): { ok: boolean; hw: number; hh: number } {
   return { ok, hw, hh };
 }
 
-describe('§K1 (S-475) — house renders iso diamond plinth footprint', () => {
-  test('house body has at least one iso 2:1 diamond polygon (the plinth)', () => {
+describe('§K1 (S-503) — house renders iso parallelogram plinth footprint', () => {
+  // S-503 supersedes the S-475 "axis-aligned diamond plinth" test. The
+  // S-475 plinth was a corner-facing 4-vertex diamond with two corners
+  // sharing y (left+right) and two sharing x (front+back) — bilaterally
+  // symmetric and read as a flat front-elevation rectangle in live
+  // renders. S-503 replaces it with an ASYMMETRIC parallelogram whose
+  // 4 corners are projections of an LX × LZ rectangular footprint
+  // (LX > LZ) through worldToScreen. The result is a parallelogram
+  // (no two corners share x; no two share y exactly) — the modern
+  // Hades / Stardew look.
+  test('house body has at least one iso parallelogram polygon (the plinth)', () => {
     const house = new House({
       ownerId: 'iso-test',
       ownerName: 'iso',
       width: 200,
       height: 200,
     });
-    // Reach into the body Graphics. The plaque is a separate Container
-    // (re-parented by the layout system); the iso plinth is on the
-    // body. We use the .view container's first Graphics child which
-    // is `body`.
     const bodyG = house.view.children[0] as { context: { instructions: unknown[] } };
     expect(bodyG, 'house body Graphics not found').toBeDefined();
     const polys = extractDiamondCandidates(bodyG);
     expect(polys.length, 'no 4-vertex polygons found on house body').toBeGreaterThan(0);
-    const diamonds = polys.map(isIsoDiamond).filter((d) => d.ok);
+
+    // An iso footprint parallelogram has:
+    //   • 4 vertices
+    //   • opposite edges parallel (parallelogram property)
+    //   • non-trivial bbox (w ≥ 100 for bodyW=156 and overhang)
+    //   • slope of one edge pair matches +ISO_SIN (going up-and-right
+    //     along world +X), the other pair matches -ISO_SIN (going up-
+    //     and-left along world +Z). The two slopes have OPPOSITE
+    //     signs so the figure tilts in both directions — that's the
+    //     iso-footprint signature.
+    const isParallelogramFootprint = (pts: number[]): boolean => {
+      if (pts.length !== 8) return false;
+      const xs = [pts[0]!, pts[2]!, pts[4]!, pts[6]!];
+      const ys = [pts[1]!, pts[3]!, pts[5]!, pts[7]!];
+      const w = Math.max(...xs) - Math.min(...xs);
+      const h = Math.max(...ys) - Math.min(...ys);
+      if (w < 100 || h < 30) return false;
+      // Edge slopes (dy/dx).
+      const slopes: number[] = [];
+      for (let i = 0; i < 4; i++) {
+        const x0 = pts[i * 2]!;
+        const y0 = pts[i * 2 + 1]!;
+        const x1 = pts[((i + 1) % 4) * 2]!;
+        const y1 = pts[((i + 1) % 4) * 2 + 1]!;
+        const dx = x1 - x0;
+        const dy = y1 - y0;
+        if (Math.abs(dx) < 0.5) return false; // no vertical edges
+        slopes.push(dy / dx);
+      }
+      // Opposite edges must have ~equal slope (parallelogram).
+      const par1 = Math.abs(slopes[0]! - slopes[2]!) < 0.05;
+      const par2 = Math.abs(slopes[1]! - slopes[3]!) < 0.05;
+      if (!par1 || !par2) return false;
+      // The two edge-pair slopes must have OPPOSITE signs (one +ISO_SIN/cos,
+      // one -ISO_SIN/cos for the iso basis).
+      const sgn0 = Math.sign(slopes[0]!);
+      const sgn1 = Math.sign(slopes[1]!);
+      return sgn0 !== 0 && sgn1 !== 0 && sgn0 !== sgn1;
+    };
+    const footprintPolys = polys.filter(isParallelogramFootprint);
     expect(
-      diamonds.length,
-      `house body must contain ≥ 1 iso 2:1 diamond (plinth). polys=${JSON.stringify(polys)}`,
+      footprintPolys.length,
+      `expected ≥ 1 iso parallelogram footprint poly (plinth). ISO_SIN=${ISO_SIN}. polys=${JSON.stringify(polys)}`,
     ).toBeGreaterThanOrEqual(1);
-    // The plinth's hw should be ≈ bodyW/2 + 8 = (200*0.78)/2 + 8 = 86.
-    // Floor at 50 to allow body-width derivation slack.
-    const plinth = diamonds.reduce((a, b) => (b.hw > a.hw ? b : a));
-    expect(plinth.hw).toBeGreaterThan(50);
+    // Pick the largest — that's the plinth.
+    const plinth = footprintPolys.reduce((a, b) => {
+      const aw = Math.max(a[0]!, a[2]!, a[4]!, a[6]!) - Math.min(a[0]!, a[2]!, a[4]!, a[6]!);
+      const bw = Math.max(b[0]!, b[2]!, b[4]!, b[6]!) - Math.min(b[0]!, b[2]!, b[4]!, b[6]!);
+      return bw > aw ? b : a;
+    });
+    const pxs = [plinth[0]!, plinth[2]!, plinth[4]!, plinth[6]!];
+    const plinthW = Math.max(...pxs) - Math.min(...pxs);
+    expect(plinthW).toBeGreaterThan(100);
+  });
+});
+
+describe('§K1 (S-503) — house front-LEFT and front-RIGHT wall faces have visibly different widths', () => {
+  // The acceptance criterion for S-503: front-wall poly width / height
+  // ratio MUST differ from side-wall ratio per the dimetric basis.
+  // This locks that the asymmetric footprint (footLX > footLZ) is
+  // honored in the wall geometry — without it, S-497's bilaterally
+  // symmetric front-left ≡ front-right walls returned, which read
+  // as a flat front-elevation rectangle in live renders.
+  test('largest two skewed wall polys have visibly different widths (LX != LZ)', () => {
+    const house = new House({
+      ownerId: 'iso-asym-test',
+      ownerName: 'asym',
+      width: 200,
+      height: 200,
+    });
+    const bodyG = house.view.children[0] as { context: { instructions: unknown[] } };
+    const polys = extractDiamondCandidates(bodyG);
+
+    // A wall poly is a 4-vertex iso parallelogram with significant
+    // height (the wall rises from base to top) AND bbox.w ≥ 30. We
+    // separate "left-leaning" (slope from front-base going up-LEFT,
+    // i.e. into the front-LEFT face) from "right-leaning" (slope
+    // going up-RIGHT, i.e. into the front-RIGHT face) by inspecting
+    // the bottom edge's direction.
+    function classifyWall(pts: number[]): {
+      kind: 'left' | 'right' | 'none';
+      bottomLen: number;
+      h: number;
+    } {
+      if (pts.length !== 8) return { kind: 'none', bottomLen: 0, h: 0 };
+      const xs = [pts[0]!, pts[2]!, pts[4]!, pts[6]!];
+      const ys = [pts[1]!, pts[3]!, pts[5]!, pts[7]!];
+      const h = Math.max(...ys) - Math.min(...ys);
+      if (h < 50) return { kind: 'none', bottomLen: 0, h };
+      // Skip the PLINTH parallelogram: its corners straddle y=0 (front
+      // corner at y > 0 below the base, back corner at y < 0). Walls
+      // have all corners at y ≤ 0 (they rise UP from the base).
+      const maxY = Math.max(...ys);
+      if (maxY > 1) return { kind: 'none', bottomLen: 0, h };
+      // Find the two BOTTOM corners (the two vertices with the largest y).
+      const sortedIdx = [0, 1, 2, 3].sort((a, b) => ys[b]! - ys[a]!);
+      const b0 = sortedIdx[0]!;
+      const b1 = sortedIdx[1]!;
+      const bx0 = xs[b0]!;
+      const by0 = ys[b0]!;
+      const bx1 = xs[b1]!;
+      const by1 = ys[b1]!;
+      const dx = bx1 - bx0;
+      const dy = by1 - by0;
+      const bottomLen = Math.hypot(dx, dy);
+      if (bottomLen < 30) return { kind: 'none', bottomLen, h };
+      // Wall faces have a bottom edge that is iso-skewed (not horiz,
+      // not vert).  If dx and dy have the same sign (both + or both -)
+      // when reading from the right-most-x bottom corner toward the
+      // other, the edge slopes UP-LEFT (into the back-left) → that is
+      // the front-LEFT wall's bottom edge.  Opposite signs → front-
+      // RIGHT.  We canonicalize by always reading from the corner
+      // with the LARGER x to the smaller x.
+      const fromRight = bx0 > bx1
+        ? { dxr: bx1 - bx0, dyr: by1 - by0 }
+        : { dxr: bx0 - bx1, dyr: by0 - by1 };
+      // dxr is now negative (going LEFT). If dyr is also negative,
+      // the edge goes UP and LEFT → front-LEFT wall.  If dyr is
+      // positive (going DOWN and LEFT), the edge goes DOWN and LEFT
+      // — that's the front-RIGHT wall's bottom edge as read from
+      // the front corner.
+      const kind: 'left' | 'right' =
+        fromRight.dyr < 0 ? 'left' : 'right';
+      return { kind, bottomLen, h };
+    }
+
+    const walls = polys
+      .map((pts) => ({ pts, ...classifyWall(pts) }))
+      .filter((w) => w.kind !== 'none');
+    // Pick the WIDEST left-leaning wall and the WIDEST right-leaning
+    // wall — those are the front-LEFT (long primary face) and front-
+    // RIGHT (short receding face) wall polys.  Other left/right
+    // candidates (door, windows) are smaller.
+    const leftWalls = walls.filter((w) => w.kind === 'left');
+    const rightWalls = walls.filter((w) => w.kind === 'right');
+    expect(
+      leftWalls.length,
+      'expected ≥ 1 front-LEFT iso wall poly (long primary face)',
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      rightWalls.length,
+      'expected ≥ 1 front-RIGHT iso wall poly (short receding face)',
+    ).toBeGreaterThanOrEqual(1);
+    const widestLeft = leftWalls.reduce((a, b) =>
+      b.bottomLen > a.bottomLen ? b : a,
+    );
+    const widestRight = rightWalls.reduce((a, b) =>
+      b.bottomLen > a.bottomLen ? b : a,
+    );
+    // Acceptance: the long PRIMARY face's bottom edge is at least 1.4×
+    // the short receding face's bottom edge — the asymmetric-footprint
+    // signature.  With footLX/footLZ = 0.62/0.38 = 1.63, this gives
+    // a comfortable 1.4 floor that absorbs measurement slack.
+    const ratio = widestLeft.bottomLen / widestRight.bottomLen;
+    expect(
+      ratio,
+      `front-LEFT wall bottom-edge length must be ≥ 1.4× front-RIGHT ` +
+        `(asymmetric iso footprint, S-503). got left=${widestLeft.bottomLen} ` +
+        `right=${widestRight.bottomLen} ratio=${ratio}`,
+    ).toBeGreaterThanOrEqual(1.4);
+    // And the height/width ratio of front-LEFT must DIFFER from front-
+    // RIGHT (the explicit acceptance brief).
+    const leftRatio = widestLeft.h / widestLeft.bottomLen;
+    const rightRatio = widestRight.h / widestRight.bottomLen;
+    expect(
+      Math.abs(leftRatio - rightRatio),
+      `front-LEFT and front-RIGHT wall H/W ratios must differ ` +
+        `(per S-503 acceptance: dimetric basis gives different ` +
+        `aspect for the two visible faces). leftRatio=${leftRatio} ` +
+        `rightRatio=${rightRatio}`,
+    ).toBeGreaterThan(0.3);
   });
 });
 

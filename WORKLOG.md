@@ -3463,3 +3463,72 @@ of an iso building).
   triangles. Now the silhouette reads as a 3D volume — Hades /
   Stardew 3/4 iso box look.
 
+---
+
+## Iteration 95 — §K1 asymmetric iso 3/4 box (S-503)
+
+**What:** S-497's iso 3/4 geometry was mathematically correct but
+the silhouette was bilaterally symmetric — front-LEFT and front-
+RIGHT walls were mirror images about the vertical axis through the
+center, the roof was a head-on isoceles triangle with a vertical
+center seam. Live judge `jfinal-93-solo.png` confirmed: all houses
+read as flat front-elevation rectangle walls + isoceles triangle
+roofs even though the geometry was iso-projected. Root cause:
+S-497 used a SQUARE world footprint (footLX = footLZ = bodyW/2)
+viewed corner-on, so the projected silhouette is symmetric about
+its vertical axis.
+
+S-503 fixes by switching to an ASYMMETRIC RECTANGULAR footprint:
+`footLX = bodyW * 0.62` (PRIMARY long world side, hosts door +
+windows, lit `houseWall` tone) and `footLZ = bodyW * 0.38` (SHORT
+receding side, `houseWallShadow` tone). The roof becomes a GABLE
+roof with the ridge running along the long axis — so the ridge
+LINE itself is iso-skewed (not a vertical seam through the center)
+and the silhouette has 4 distinct roof faces (2 trapezoid main
+slopes + 2 hip-end triangles). The plinth becomes a parallelogram
+(not a corner-facing diamond). The result: visibly different wall
+widths on screen (LX/LZ ratio = 1.63), iso-skewed ridge that
+breaks bilateral symmetry, the modern Hades / Stardew look the
+§K1 acceptance brief calls for.
+
+**Geometry derivation:** All corners come from `worldToScreen()`
+calls — same iso basis as Ground.ts's tile grid. Local helper
+`proj(wx, wy, wz)` shifts the camera-near front corner to local
+(0, 0) AND offsets x by `((LZ - LX)/2) * ISO_COS` so the bbox
+stays centered at local x=0 — preserves compatibility with the
+layout system's bottom-center anchor semantics. Eaves overhang
+outward by `eaveOver=6` world units along each visible wall's
+outward normal. Ridge line stroked dark for the unmistakable
+Hades/Stardew gable tell. `redrawDamage()` updated to mirror the
+new footprint so HP cracks land on the actual front-LEFT wall
+plane, not the obsolete diamond face.
+
+**Test contract:** Replaced S-475's "axis-aligned diamond plinth"
+test with an "iso parallelogram footprint" test (4-vertex poly
+with opposite edges parallel + opposite-sign slopes). Added new
+S-503 regression locking that the front-LEFT wall's bottom-edge
+length is ≥ 1.4× the front-RIGHT wall's (asymmetric-footprint
+signature) AND the H/W ratios of the two walls differ by ≥ 0.3 —
+the explicit "front-wall ratio differs from side-wall ratio per
+the dimetric basis" criterion from the S-503 acceptance brief.
+
+**Files touched:**
+- `packages/client/src/canvas/stage/House.ts` (~+90 / −80 net,
+  draw() body block + redrawDamage() refactor)
+- `packages/client/src/canvas/stage/iso-projection.test.ts`
+  (+170 / −30 net, replaced S-475 diamond test with parallelogram
+  test, added S-503 wall-asymmetry test)
+
+**Verification:**
+- `pnpm test` — shared 79/79, server 21/21, client **170/170**
+  (was 169; +1 S-503 wall-asymmetry test, swapped 1 S-475 diamond
+  test for an S-503 parallelogram test). 270 total green.
+- `pnpm build` — gzipped client `index.js` = 178.83 KB (within 300
+  KB budget).
+- Live chrome-devtools MCP probe at 1280×800 solo init (4-player
+  room): `s503-iso-houses-1280x800.png` captures all four houses
+  rendering as 3D iso 3/4 boxes with visibly different left/right
+  wall widths, iso-skewed gable roofs (no vertical center seam),
+  and clearly receding side walls. The Hades/Stardew read is now
+  unambiguous — silhouette no longer looks flat.
+

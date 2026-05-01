@@ -11,7 +11,7 @@ import {
   TextStyle,
 } from 'pixi.js';
 import { palette, playerColor } from '../../palette.js';
-import { ISO_SIN } from './iso.js';
+import { ISO_COS, ISO_SIN, worldToScreen } from './iso.js';
 
 /** Token-aware wrap. Splits text into "tokens" — runs of identical
  *  break-class — where:
@@ -194,15 +194,33 @@ export class House {
     // use: u along (leftBase → frontBase), v straight up. This keeps
     // the cracks visibly anchored to the receding iso wall plane
     // rather than floating in screen space (§K1 iso pass).
+    //
+    // S-503: must mirror the new ASYMMETRIC footprint used in draw()
+    // so cracks land on the actual wall face (not the old symmetric-
+    // diamond face that no longer exists). Recompute leftBase /
+    // frontBase via the same worldToScreen basis.
     const w = this.opts.width;
     const h = this.opts.height;
     const bodyW = w * 0.78;
     const bodyH = h * 0.55;
-    const pW = bodyW / 2 + 8;
-    const pH = pW * ISO_SIN;
+    const footLX = bodyW * 0.62;
+    const footLZ = bodyW * 0.38;
     const wallH = bodyH;
-    const leftBase = { x: -pW, y: 0 };
-    const frontBase = { x: 0, y: pH };
+    const sFront = worldToScreen(footLX, footLZ, 0);
+    const xCenterOffset = ((footLZ - footLX) / 2) * ISO_COS;
+    const proj3D = (
+      wx: number,
+      wy: number,
+      wz: number,
+    ): { x: number; y: number } => {
+      const s = worldToScreen(wx, wz, wy);
+      return {
+        x: s.x - sFront.x - xCenterOffset,
+        y: s.y - sFront.y,
+      };
+    };
+    const leftBase = proj3D(0, 0, footLZ);
+    const frontBase = proj3D(footLX, 0, footLZ);
     const proj = (u: number, v: number): { x: number; y: number } => {
       const ux = (frontBase.x - leftBase.x) * u;
       const uy = (frontBase.y - leftBase.y) * u;
@@ -242,174 +260,289 @@ export class House {
     const bodyW = w * 0.78;
     const bodyH = h * 0.55;
 
-    // ===== iso diamond foundation (§K1, S-467) =====
-    // Anchor the house onto the iso ground plane with a 2:1 dimetric
-    // diamond plinth at y=0. The diamond's width matches the house
-    // body's footprint (slight overhang so the wall-base reads as
-    // sitting *on* the plinth, not floating above it). The vertical
-    // half-height = halfW * ISO_SIN = halfW * 0.5 — exactly the
-    // squash ratio used by Ground.ts's iso tiles, so the foundation
-    // visually belongs to the same projection as the floor it sits
-    // on. Drawn FIRST so the wall-shadow (next call) paints over its
-    // back half — the front half remains visible as a base lip,
-    // which is the Hades / Stardew "house sits on a tile" cue.
-    const plinthHalfW = bodyW / 2 + 8;
-    const plinthHalfH = plinthHalfW * ISO_SIN;
-    // Plinth top diamond — sits at y = 0 (front corner) → -plinthHalfH (top)
+    // ===== ASYMMETRIC iso 3/4 box (§K1, S-503) =====
+    //
+    // Re-authored from S-497's symmetric corner-facing diamond into a
+    // proper Hades / Stardew 3/4 iso box. The S-497 geometry was
+    // mathematically iso-correct but the silhouette was bilaterally
+    // symmetric (front-right and front-left wall faces were mirror
+    // images about the vertical axis), which made the building READ
+    // as a flat front-elevation rectangle + isoceles triangle roof
+    // with a vertical center seam. Live screenshots (jfinal-93-solo)
+    // confirmed the read-as-flat regression even though the
+    // geometry was iso-projected.
+    //
+    // S-503 fix: build the house from an ASYMMETRIC rectangular world-
+    // space footprint (footLX != footLZ) so the two visible wall
+    // faces have visibly DIFFERENT widths on screen — one PRIMARY
+    // face (the longer one, hosts door + windows) and one SHORTER
+    // receding side. This matches the Hades / Stardew look where
+    // the building presents one big face directly to the camera
+    // and a narrower side wall that recedes into depth. The roof
+    // is now a GABLE roof with the ridge running along the long
+    // axis (so the ridge LINE is itself iso-skewed, not a vertical
+    // line), with two trapezoid main slopes + two triangular hip
+    // ends — four distinct roof faces total.
+    //
+    // World-coord setup (working through worldToScreen so the basis
+    // is provably the same as Ground.ts's iso tiles):
+    //   • footLX  = world length along +X axis (front-LEFT face is
+    //     this long — the PRIMARY face). LX > LZ by ~1.7×.
+    //   • footLZ  = world length along +Z axis (front-RIGHT face is
+    //     this long — the SHORTER receding face).
+    //   • building occupies world (0..footLX, 0..wallH, 0..footLZ).
+    //   • bottom-FRONT corner (camera-near) = world (footLX, 0, footLZ).
+    //   • This corner becomes the LOCAL ANCHOR — we shift the iso
+    //     basis so this corner sits at local (0, 0).
+    //
+    // On screen, the visible bottom edges are then:
+    //   • front-LEFT bottom edge (leftBase → frontBase): runs along
+    //     world +X, screen-length = footLX, slopes UP to the right
+    //     at the iso angle. THE LONG ONE.
+    //   • front-RIGHT bottom edge (frontBase → rightBase): runs along
+    //     world -Z, screen-length = footLZ, slopes UP to the left at
+    //     the iso angle. THE SHORT ONE.
+    //
+    // The front (camera-near) base point sits at the bottom of the
+    // silhouette; the building's apex (roof ridge) is OFF-CENTER —
+    // it runs along the long-axis ridge, so the ridge LINE is iso-
+    // skewed, breaking the bilateral symmetry that made the S-497
+    // silhouette read flat.
+    const footLX = bodyW * 0.62;  // PRIMARY (long) world side
+    const footLZ = bodyW * 0.38;  // SHORTER (receding) world side
+    const wallH = bodyH;
+    const roofH = h * 0.34;       // ridge rises this much above wallTop
+    const eaveOver = 6;            // eave overhang in world units
+
+    // Local helper: project world (wx, wy, wz) into LOCAL anchor space.
+    // We anchor so the bottom of the silhouette (the camera-near front
+    // corner of the footprint) sits at local y=0 AND the building's
+    // horizontal bbox is centered at local x=0. Centering on x=0 keeps
+    // the plaque-above-roof layout, the layout system's house-position
+    // = bottom-center semantics, and the existing nameplate/character
+    // station math compatible with the prior diamond-symmetric build.
+    //
+    // Horizontal centering offset: the screen extent of the footprint
+    // runs from world(0,_,LZ) at x=-LX·cos+sFront.x to world(LX,_,0) at
+    // x=+LZ·cos+sFront.x — i.e. x ∈ [-LX·cos, +LZ·cos] in pre-centered
+    // local space. Center = (LZ·cos - LX·cos)/2 = (LZ - LX)/2 · cos.
+    // We subtract this so the bbox is centered on x=0.
+    const sFront = worldToScreen(footLX, footLZ, 0);
+    const xCenterOffset = ((footLZ - footLX) / 2) * ISO_COS;
+    const proj = (wx: number, wy: number, wz: number): { x: number; y: number } => {
+      const s = worldToScreen(wx, wz, wy);
+      return {
+        x: s.x - sFront.x - xCenterOffset,
+        y: s.y - sFront.y,
+      };
+    };
+
+    // Footprint corners (world-XZ, y=0). After the bbox-centering
+    // offset, the camera-NEAR front corner sits at local
+    // (-xCenterOffset, 0) — i.e. just right of center on screen — and
+    // the camera-FAR back corner is at (-xCenterOffset, -(LX+LZ)·sin)
+    // up and to the left. The visible bottom edges read as:
+    //   • frontBase → leftBase: long, slopes up-LEFT (the front-LEFT
+    //     wall's bottom edge)
+    //   • frontBase → rightBase: short, slopes up-RIGHT (the front-
+    //     RIGHT wall's bottom edge)
+    const frontBase = proj(footLX, 0, footLZ);
+    const rightBase = proj(footLX, 0, 0);         // up-and-right of front
+    const leftBase  = proj(0,      0, footLZ);    // up-and-left of front
+
+    // Top corners (world-XZ at y=wallH):
+    const frontTop = proj(footLX, wallH, footLZ);
+    const rightTop = proj(footLX, wallH, 0);
+    const backTop  = proj(0,      wallH, 0);
+    const leftTop  = proj(0,      wallH, footLZ);
+
+    // ----- Plinth: iso parallelogram footprint (NOT a diamond) -----
+    // The plinth extends slightly past the wall base on all sides
+    // (overhang `over`) so the wall-foot reads as sitting on a stone
+    // slab. Drawn as the full footprint parallelogram with an iso
+    // tile-poly shape: 4 corners are the 4 base corners, lifted in
+    // world coords by (-over) on the outside.
+    const over = 6;
+    const plinthFront = proj(footLX + over, 0, footLZ + over);
+    const plinthRight = proj(footLX + over, 0, -over);
+    const plinthBack  = proj(-over,         0, -over);
+    const plinthLeft  = proj(-over,         0, footLZ + over);
     g.poly([
-      0, plinthHalfH,           // front corner (closest to camera)
-      plinthHalfW, 0,           // right corner
-      0, -plinthHalfH,          // back corner (deepest)
-      -plinthHalfW, 0,          // left corner
+      plinthFront.x, plinthFront.y,
+      plinthRight.x, plinthRight.y,
+      plinthBack.x,  plinthBack.y,
+      plinthLeft.x,  plinthLeft.y,
     ]).fill({ color: palette.houseWallShadow });
-    // Lighter highlight on the front-facing half so the diamond reads
-    // as a 3-d slab rather than a flat poly. Front-half = front + side
-    // corners only.
+    // Lighter top slab fill on the FRONT half (front-corner triangle
+    // toward the right + left edges) so the plinth reads as a 3-d
+    // slab.  The "front half" = the triangle from front to right and
+    // front to left meeting at the projected center.
+    const plinthCenter = proj(footLX / 2, 0, footLZ / 2);
     g.poly([
-      0, plinthHalfH,
-      plinthHalfW, 0,
-      0, 0,
+      plinthFront.x, plinthFront.y,
+      plinthRight.x, plinthRight.y,
+      plinthCenter.x, plinthCenter.y,
+    ]).fill({ color: palette.houseWall, alpha: 0.45 });
+    g.poly([
+      plinthFront.x, plinthFront.y,
+      plinthLeft.x, plinthLeft.y,
+      plinthCenter.x, plinthCenter.y,
     ]).fill({ color: palette.houseWall, alpha: 0.55 });
+    // Side-skirt: extruded depth on the front-RIGHT and front-LEFT
+    // visible plinth edges. The plinth front edges hang down by
+    // `skirtH` px in screen y so the slab reads as having thickness.
+    const skirtH = 5;
     g.poly([
-      0, plinthHalfH,
-      -plinthHalfW, 0,
-      0, 0,
-    ]).fill({ color: palette.houseWall, alpha: 0.4 });
-    // Plinth side-skirt: the diamond has a small extruded depth
-    // (thickness ~4 px) drawn as two parallelograms hanging beneath
-    // the front-left and front-right edges. Sells the "the house
-    // is standing on a stone slab" read.
-    const skirtH = 4;
-    g.poly([
-      0, plinthHalfH,
-      0, plinthHalfH + skirtH,
-      plinthHalfW, skirtH,
-      plinthHalfW, 0,
+      plinthFront.x, plinthFront.y,
+      plinthFront.x, plinthFront.y + skirtH,
+      plinthRight.x, plinthRight.y + skirtH,
+      plinthRight.x, plinthRight.y,
     ]).fill({ color: 0x1a1009 });
     g.poly([
-      0, plinthHalfH,
-      0, plinthHalfH + skirtH,
-      -plinthHalfW, skirtH,
-      -plinthHalfW, 0,
+      plinthFront.x, plinthFront.y,
+      plinthFront.x, plinthFront.y + skirtH,
+      plinthLeft.x,  plinthLeft.y + skirtH,
+      plinthLeft.x,  plinthLeft.y,
     ]).fill({ color: 0x14080a });
 
-    // ===== iso 3/4 box body (§K1, S-497) =====
+    // ----- WALLS: front-LEFT (PRIMARY long face) + front-RIGHT (SHORT side) -----
     //
-    // Re-authored from a flat front-elevation rect+triangle (S-467) into
-    // a true iso 3/4 box. The body is now drawn through worldToScreen()
-    // basis vectors so front-right and front-left wall faces are visibly
-    // RECEDING parallelograms (not parallel-vertical), and the roof is
-    // a hipped iso roof with two visible slope faces meeting at a ridge
-    // apex above the centroid of the top diamond.
-    //
-    // Local coord system: bottom-center at (0,0). The plinth above
-    // defines the footprint diamond. Walls rise straight up by `wallH`
-    // pixels (height in screen-y); the top diamond is the same diamond
-    // shifted up by wallH. The two visible faces are:
-    //
-    //   • Front-right face: corners (front_base, right_base, right_top,
-    //     front_top). On screen: (0, +pH), (+pW, 0), (+pW, -wallH),
-    //     (0, +pH - wallH). Both horizontal edges slope up-right at the
-    //     iso angle (pH/pW = ISO_SIN = 0.5), so the face reads as a
-    //     parallelogram receding into depth.
-    //   • Front-left face: mirror — (left_base, front_base, front_top,
-    //     left_top) = (-pW, 0), (0, +pH), (0, +pH - wallH), (-pW, -wallH).
-    //
-    // The two back faces (right→back, back→left) are hidden behind the
-    // front faces, exactly like a Hades / Stardew iso building.
-    //
-    // Roof: hipped iso roof with a single ridge apex centered above the
-    // top diamond's centroid (which is itself at (0, -wallH) since the
-    // diamond is symmetric around the local x-axis at y=-wallH). The
-    // apex sits at (0, -wallH - roofH). Two visible slope faces:
-    //   • Front-right slope: triangle (front_top, right_top, apex)
-    //   • Front-left slope: triangle (front_top, left_top, apex)
-    // Both slopes are non-axis-aligned triangles — no edge is purely
-    // horizontal or vertical — so the roof reads as iso-projected
-    // (no head-on isoceles triangle).
-    const wallH = bodyH;
-    const pW = plinthHalfW;
-    const pH = plinthHalfH;
-    const frontBase = { x: 0, y: pH };
-    const rightBase = { x: pW, y: 0 };
-    const leftBase = { x: -pW, y: 0 };
-    const frontTop = { x: 0, y: pH - wallH };
-    const rightTop = { x: pW, y: -wallH };
-    const leftTop = { x: -pW, y: -wallH };
-
-    // Front-RIGHT wall face (the camera-right side, more in shadow).
+    // front-LEFT wall: spans (leftBase → frontBase) along bottom and
+    // (leftTop → frontTop) along top. World face at z=footLZ. This is
+    // the LONG face since footLX > footLZ. Hosts door + windows.
+    // Painted with the LIT wall tone.
+    g.poly([
+      leftBase.x,  leftBase.y,
+      frontBase.x, frontBase.y,
+      frontTop.x,  frontTop.y,
+      leftTop.x,   leftTop.y,
+    ]).fill({ color: palette.houseWall });
+    // front-RIGHT wall: spans (frontBase → rightBase). World face at
+    // x=footLX. SHORTER receding side. Painted with the SHADOW tone
+    // so the asymmetry doubles as a lighting cue (camera-right is in
+    // shadow, like Hades).
     g.poly([
       frontBase.x, frontBase.y,
       rightBase.x, rightBase.y,
-      rightTop.x, rightTop.y,
-      frontTop.x, frontTop.y,
+      rightTop.x,  rightTop.y,
+      frontTop.x,  frontTop.y,
     ]).fill({ color: palette.houseWallShadow });
-    // Front-LEFT wall face (the camera-left side, lit — so paint with
-    // the lighter wall tone). This is the "primary" face that hosts
-    // the door + windows since iso scenes traditionally read better
-    // when the door is on the lit face.
-    g.poly([
-      leftBase.x, leftBase.y,
-      frontBase.x, frontBase.y,
-      frontTop.x, frontTop.y,
-      leftTop.x, leftTop.y,
-    ]).fill({ color: palette.houseWall });
 
-    // Roof apex above the centroid of the top diamond.
-    const roofH = h * 0.4;
-    const apex = { x: 0, y: -wallH - roofH };
-    // Front-right roof slope (darker = shadow side).
+    // ----- GABLE ROOF along the LONG axis (X) -----
+    //
+    // Ridge runs from above the LEFT (back) end of the long axis to
+    // above the RIGHT (front) end. Specifically, the ridge sits at
+    // y=wallH+roofH in world space, centered on z=footLZ/2, running
+    // from x=0 to x=footLX. Two main slope rectangles (front + back)
+    // are 4-vertex iso parallelograms; two hip-end triangles cap the
+    // short ends. The result is a roof whose visible silhouette has
+    // an iso-SKEWED ridge LINE (not a vertical seam through center).
+    const ridgeBack  = proj(0,        wallH + roofH, footLZ / 2);
+    const ridgeFront = proj(footLX,   wallH + roofH, footLZ / 2);
+
+    // Front (camera-facing) main slope: trapezoid spanning the front
+    // wall's top edge → ridge. Corners: leftTop, frontTop, ridgeFront,
+    // ridgeBack. (Wait — the FRONT slope is the one over the front-
+    // LEFT wall, since the front-LEFT wall is the camera-near long
+    // face.) Let me re-orient:
+    //   • Long-axis primary slope (over front-LEFT wall, camera-near)
+    //     = corners (leftTop, frontTop, ridgeFront, ridgeBack).
+    //     This is the TINTED slope — owner color, the team-flag read.
+    //   • Long-axis far slope (over the BACK wall, hidden side, camera-
+    //     far) = corners (backTop, rightTop, ridgeFront, ridgeBack).
+    //     Shadow tone — partly visible above the ridge in the silhouette.
+    //   • Hip-end at FRONT short end (over front-RIGHT wall) = triangle
+    //     (frontTop, rightTop, ridgeFront). Camera-right side, shadow tone.
+    //   • Hip-end at BACK short end (over back wall) = triangle
+    //     (leftTop, backTop, ridgeBack). Hidden behind silhouette;
+    //     a thin sliver may peek above the eave on the back-left.
+    //
+    // We draw FAR slope first (so near slope paints over the ridge
+    // line), then near slope, then near hip end. The far hip end at
+    // the back is hidden so we skip it.
+
+    // Far slope (camera-far, over back wall — the upper-right portion
+    // of the roof silhouette). Painted with shadow tone.
     g.poly([
-      frontTop.x, frontTop.y,
-      rightTop.x, rightTop.y,
-      apex.x, apex.y,
+      backTop.x,    backTop.y,
+      rightTop.x,   rightTop.y,
+      ridgeFront.x, ridgeFront.y,
+      ridgeBack.x,  ridgeBack.y,
     ]).fill({ color: palette.houseRoofShadow });
-    // Front-left roof slope (tinted by owner — the visible "team color"
-    // band, like a flag's house roof in Stardew co-op).
+
+    // Hip-end at FRONT short end (over front-RIGHT wall). Triangle
+    // with the ridge-front apex. This is the small triangular face
+    // visible on the camera-right side of the roof.
     g.poly([
-      leftTop.x, leftTop.y,
-      frontTop.x, frontTop.y,
-      apex.x, apex.y,
+      frontTop.x,   frontTop.y,
+      rightTop.x,   rightTop.y,
+      ridgeFront.x, ridgeFront.y,
+    ]).fill({ color: palette.houseRoofShadow });
+
+    // Near slope (camera-near, over front-LEFT wall — the LARGE
+    // primary roof face). Painted with the OWNER TINT — this is the
+    // big colored roof you see as the team flag. Drawn LAST so the
+    // ridge line is the seam between this and the far slope.
+    g.poly([
+      leftTop.x,    leftTop.y,
+      frontTop.x,   frontTop.y,
+      ridgeFront.x, ridgeFront.y,
+      ridgeBack.x,  ridgeBack.y,
     ]).fill({ color: tint });
-    // Roof eave overhang: a thin parallelogram strip at the bottom of
-    // each roof slope, extending slightly past the wall edge so the
-    // roof visibly overhangs (Stardew's signature eave). Drawn as a
-    // narrow poly along each top wall edge, lifted by `eaveDrop`.
-    const eaveDrop = 4;
+
+    // Hip-end at BACK short end (small triangle visible at the
+    // back-left of the silhouette, above the back wall + plinth).
+    // Tint half-alpha so it reads as the same roof but in shadow.
     g.poly([
-      frontTop.x, frontTop.y + eaveDrop,
-      rightTop.x, rightTop.y + eaveDrop,
-      rightTop.x, rightTop.y - 2,
-      frontTop.x, frontTop.y - 2,
+      leftTop.x,   leftTop.y,
+      backTop.x,   backTop.y,
+      ridgeBack.x, ridgeBack.y,
+    ]).fill({ color: tint, alpha: 0.55 });
+
+    // Ridge line: dark stroke from ridgeBack to ridgeFront. This is
+    // the iso-SKEWED ridge — the unmistakable Hades/Stardew tell that
+    // the roof is a 3D gable, not a head-on triangle.
+    g.moveTo(ridgeBack.x, ridgeBack.y);
+    g.lineTo(ridgeFront.x, ridgeFront.y);
+    g.stroke({ color: palette.houseRoofShadow, width: 2.5, alpha: 0.9 });
+
+    // ----- Eave overhang -----
+    // The roof eaves project past the wall plane by `eaveOver` world
+    // units along the OUTWARD normal of each wall. We approximate this
+    // by lifting the bottom edge of each visible roof slope outward in
+    // world coords (negative-Z for the front slope, positive-X for the
+    // hip end) and drawing a thin strip.
+    const eaveLeftBack  = proj(0,        wallH, footLZ + eaveOver);
+    const eaveLeftFront = proj(footLX,   wallH, footLZ + eaveOver);
+    g.poly([
+      leftTop.x,        leftTop.y,
+      frontTop.x,       frontTop.y,
+      eaveLeftFront.x,  eaveLeftFront.y,
+      eaveLeftBack.x,   eaveLeftBack.y,
+    ]).fill({ color: tint, alpha: 0.65 });
+    const eaveRightFront = proj(footLX + eaveOver, wallH, footLZ);
+    const eaveRightBack  = proj(footLX + eaveOver, wallH, 0);
+    g.poly([
+      frontTop.x,        frontTop.y,
+      rightTop.x,        rightTop.y,
+      eaveRightBack.x,   eaveRightBack.y,
+      eaveRightFront.x,  eaveRightFront.y,
     ]).fill({ color: palette.houseRoofShadow, alpha: 0.6 });
-    g.poly([
-      leftTop.x, leftTop.y + eaveDrop,
-      frontTop.x, frontTop.y + eaveDrop,
-      frontTop.x, frontTop.y - 2,
-      leftTop.x, leftTop.y - 2,
-    ]).fill({ color: tint, alpha: 0.5 });
 
-    // Ridge highlight: a darker line from the front apex projection
-    // down the ridge. Sells the "roof has a ridge" read.
-    g.moveTo(apex.x, apex.y);
-    g.lineTo(0, pH - wallH); // down to the front-top corner
-    g.stroke({ color: palette.houseRoofShadow, width: 2, alpha: 0.8 });
-
-    // Hipped roof horizontal bands (course lines along each slope).
-    // Painted on the front-LEFT slope only — the lit slope is where
-    // texture detail reads. Each band runs from the left-top edge
-    // toward the apex, parallel to the eave.
+    // Hipped roof course lines on the LONG primary slope (face the
+    // camera mostly sees). Each band runs parallel to the ridge,
+    // dividing the slope into horizontal-iso strips. Drawn from the
+    // eave (front-left wall top edge) toward the ridge.
     for (let i = 1; i <= 3; i++) {
       const t = i / 4;
-      // Interpolate two points: one along (leftTop → apex) and one
-      // along (frontTop → apex) at parameter t.
-      const px = leftTop.x + (apex.x - leftTop.x) * t;
-      const py = leftTop.y + (apex.y - leftTop.y) * t;
-      const qx = frontTop.x + (apex.x - frontTop.x) * t;
-      const qy = frontTop.y + (apex.y - frontTop.y) * t;
+      // Interpolate from leftTop → ridgeBack and frontTop → ridgeFront.
+      const px = leftTop.x + (ridgeBack.x - leftTop.x) * t;
+      const py = leftTop.y + (ridgeBack.y - leftTop.y) * t;
+      const qx = frontTop.x + (ridgeFront.x - frontTop.x) * t;
+      const qy = frontTop.y + (ridgeFront.y - frontTop.y) * t;
       g.moveTo(px, py);
       g.lineTo(qx, qy);
-      g.stroke({ color: palette.houseRoofShadow, width: 1.5, alpha: 0.45 });
+      g.stroke({ color: palette.houseRoofShadow, width: 1.5, alpha: 0.55 });
     }
 
     // chimney — sits on the front-right slope, lifted above the roof.
