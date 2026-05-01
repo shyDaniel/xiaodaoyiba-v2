@@ -11,6 +11,7 @@ import {
   TextStyle,
 } from 'pixi.js';
 import { palette, playerColor } from '../../palette.js';
+import { ISO_SIN } from './iso.js';
 
 /** Token-aware wrap. Splits text into "tokens" — runs of identical
  *  break-class — where:
@@ -218,22 +219,105 @@ export class House {
     const bodyX = -bodyW / 2;
     const bodyY = -bodyH;
 
+    // ===== iso diamond foundation (§K1, S-467) =====
+    // Anchor the house onto the iso ground plane with a 2:1 dimetric
+    // diamond plinth at y=0. The diamond's width matches the house
+    // body's footprint (slight overhang so the wall-base reads as
+    // sitting *on* the plinth, not floating above it). The vertical
+    // half-height = halfW * ISO_SIN = halfW * 0.5 — exactly the
+    // squash ratio used by Ground.ts's iso tiles, so the foundation
+    // visually belongs to the same projection as the floor it sits
+    // on. Drawn FIRST so the wall-shadow (next call) paints over its
+    // back half — the front half remains visible as a base lip,
+    // which is the Hades / Stardew "house sits on a tile" cue.
+    const plinthHalfW = bodyW / 2 + 8;
+    const plinthHalfH = plinthHalfW * ISO_SIN;
+    // Plinth top diamond — sits at y = 0 (front corner) → -plinthHalfH (top)
+    g.poly([
+      0, plinthHalfH,           // front corner (closest to camera)
+      plinthHalfW, 0,           // right corner
+      0, -plinthHalfH,          // back corner (deepest)
+      -plinthHalfW, 0,          // left corner
+    ]).fill({ color: palette.houseWallShadow });
+    // Lighter highlight on the front-facing half so the diamond reads
+    // as a 3-d slab rather than a flat poly. Front-half = front + side
+    // corners only.
+    g.poly([
+      0, plinthHalfH,
+      plinthHalfW, 0,
+      0, 0,
+    ]).fill({ color: palette.houseWall, alpha: 0.55 });
+    g.poly([
+      0, plinthHalfH,
+      -plinthHalfW, 0,
+      0, 0,
+    ]).fill({ color: palette.houseWall, alpha: 0.4 });
+    // Plinth side-skirt: the diamond has a small extruded depth
+    // (thickness ~4 px) drawn as two parallelograms hanging beneath
+    // the front-left and front-right edges. Sells the "the house
+    // is standing on a stone slab" read.
+    const skirtH = 4;
+    g.poly([
+      0, plinthHalfH,
+      0, plinthHalfH + skirtH,
+      plinthHalfW, skirtH,
+      plinthHalfW, 0,
+    ]).fill({ color: 0x1a1009 });
+    g.poly([
+      0, plinthHalfH,
+      0, plinthHalfH + skirtH,
+      -plinthHalfW, skirtH,
+      -plinthHalfW, 0,
+    ]).fill({ color: 0x14080a });
+
     // wall shadow
     g.rect(bodyX, bodyY, bodyW, bodyH).fill({ color: palette.houseWallShadow });
     // wall front (slightly inset top)
     g.rect(bodyX + 6, bodyY + 4, bodyW - 12, bodyH - 6).fill({ color: palette.houseWall });
-
-    // roof — triangular with eave tinted by owner color
-    const roofTop = bodyY - h * 0.4;
+    // ===== iso side-skirt under the wall (§K1, S-467) =====
+    // A thin parallelogram strip on each side of the body that picks
+    // up the iso plinth's depth — gives the wall a visible left/right
+    // depth face matching the iso projection. Without this the wall
+    // reads as a perfectly-flat 2D billboard. With it, the eye picks
+    // up that the wall has a 30°-receding side and the whole house
+    // belongs to the iso world.
+    const sideDepth = 6;
+    // right face — recedes back-right (positive x, negative y)
     g.poly([
-      bodyX - 16, bodyY + 6,
+      bodyX + bodyW, bodyY + 4,
+      bodyX + bodyW + sideDepth, bodyY + 4 - sideDepth * ISO_SIN,
+      bodyX + bodyW + sideDepth, bodyY + bodyH - sideDepth * ISO_SIN,
+      bodyX + bodyW, bodyY + bodyH,
+    ]).fill({ color: palette.houseWallShadow });
+    // left face — recedes back-left (negative x, negative y)
+    g.poly([
+      bodyX, bodyY + 4,
+      bodyX - sideDepth, bodyY + 4 - sideDepth * ISO_SIN,
+      bodyX - sideDepth, bodyY + bodyH - sideDepth * ISO_SIN,
+      bodyX, bodyY + bodyH,
+    ]).fill({ color: 0x2a1814 });
+
+    // roof — triangular with eave tinted by owner color. §K1 iso pass:
+    // the eave extends an extra `sideDepth` outward on each side and
+    // is offset upward by `sideDepth * ISO_SIN` so the eave's
+    // bottom edge runs PARALLEL to the iso side-faces below — the
+    // whole house silhouette now slants with the iso projection,
+    // matching the look of Stardew's roof eaves overhanging an iso
+    // wall. The right eave drops slightly (depth-receding side) and
+    // the left eave drops symmetrically, so the roof's underside
+    // line points into the iso vanishing geometry.
+    const roofTop = bodyY - h * 0.4;
+    const eaveOver = sideDepth + 8; // visible eave overhang
+    const eaveLift = sideDepth * ISO_SIN;
+    g.poly([
+      bodyX - eaveOver, bodyY + 6 - eaveLift,
       bodyW / 2, roofTop,
-      bodyX + bodyW + 16, bodyY + 6,
+      bodyX + bodyW + eaveOver, bodyY + 6 - eaveLift,
     ]).fill({ color: palette.houseRoofShadow });
     g.poly([
-      bodyX - 8, bodyY + 4,
+      bodyX - eaveOver + 4, bodyY + 4 - eaveLift,
       bodyW / 2, roofTop + 6,
-      bodyX + bodyW + 8, bodyY + 4,
+      bodyX + bodyW + eaveOver - 4, bodyY + 4 - eaveLift,
     ]).fill({ color: tint });
     // roof tiles — horizontal bands
     for (let i = 0; i < 4; i++) {

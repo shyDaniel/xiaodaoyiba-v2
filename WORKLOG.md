@@ -3235,3 +3235,41 @@ BattleLog / persistent shame all unchanged. R1 played end-to-end.
 - `packages/client/src/canvas/stage/iso.ts` — new module
 - `packages/client/src/canvas/stage/iso.test.ts` — new tests
 - `packages/client/src/canvas/stage/Ground.ts` — iso tile grid
+
+---
+
+## iter-91 — S-475 §K1 iso 45°: house + character iso projection
+
+Landed the in-flight iso projection edits to `Character.ts` (iso 2:1
+diamond ground shadow with halo + diagonal upper-left light offset,
+replacing the flat horizontal ellipse) and `House.ts` (iso diamond
+plinth foundation at y=0 sized to body footprint + 8 px overhang;
+extruded plinth side-skirt; iso side-skirts on left/right walls
+receding back into the projection; iso-aligned roof eaves that lift
+by `sideDepth * ISO_SIN` so the overhang line runs parallel to the
+iso side-faces below). The dirty edits had been sitting on disk
+since iter-84 — committed now.
+
+Added `packages/client/src/canvas/stage/iso-projection.test.ts` (3
+tests) that introspects Pixi 8 `Graphics.context.instructions` to
+assert: (a) house body contains ≥ 1 4-vertex polygon whose
+height/width ratio equals `ISO_SIN` (the 2:1 dimetric plinth);
+(b) character shadow contains ≥ 1 iso 2:1 diamond polygon;
+(c) character shadow no longer uses the legacy flat `ellipse()` call.
+
+Verification: 261/261 tests pass (was 258 — +3 new). Build clean.
+Live screenshot `iso-solo-init.png` (playwright MCP, 4-player solo
+init) confirms the iso pass renders: all 4 houses sit on visible
+diamond plinths, walls have side-depth faces visible on both sides,
+roof eaves slant outward following the iso projection, characters
+cast iso diamond shadows at their feet. The whole stage now reads
+as Hades/Stardew 2:1 dimetric instead of the previous flat
+side-elevation triangles + horizontal ellipses.
+
+**Files touched:**
+- `packages/client/src/canvas/characters/Character.ts` — committed
+  the in-flight iso diamond shadow (+38/−2 lines)
+- `packages/client/src/canvas/stage/House.ts` — committed the
+  in-flight iso plinth + side-skirt + iso eave edits (+94/−5 lines)
+- `packages/client/src/canvas/stage/iso-projection.test.ts` — new
+  regression test (3 cases) locking in the iso footprint contract

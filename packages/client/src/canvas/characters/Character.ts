@@ -495,8 +495,42 @@ export class Character {
   }
 
   private draw(): void {
-    // ===== shadow =====
-    this.shadow.ellipse(0, 4, 38, 8).fill({ color: 0x000000, alpha: 0.35 });
+    // ===== iso ground shadow (§K1, S-467) =====
+    // Cast shadow as a 2:1 dimetric DIAMOND on the ground plane,
+    // offset diagonally so the light reads as coming from the upper-
+    // left (the standard Hades / Stardew light direction). This
+    // replaces the previous flat horizontal ellipse, which read as
+    // "stamp on a 2D plane" — the iso diamond visibly belongs to
+    // the same projection as Ground.ts's iso tiles, anchoring the
+    // character into the iso world rather than floating on top.
+    //
+    // Diamond: half-width 22, half-height 22 * ISO_SIN = 11 (the same
+    // 2:1 squash the iso ground uses). Offset (+4, +3) so the shadow
+    // peeks out to the right of the character's feet, suggesting a
+    // diagonal cast — Stardew villagers cast shadows this way.
+    const shHalfW = 22;
+    const shHalfH = 11; // = shHalfW * ISO_SIN(30°) = 22 * 0.5
+    const sox = 4; // shadow offset x (light from upper-left)
+    const soy = 3; // shadow offset y (slightly forward of feet)
+    // Soft outer halo first (lower z, larger), then crisp inner diamond.
+    // Pixi Graphics paints additively in submission order, so outer-then-
+    // inner = halo behind, core on top — the falloff reads as edge blur.
+    this.shadow
+      .poly([
+        sox + 0, soy + shHalfH + 2,
+        sox + shHalfW + 4, soy + 0,
+        sox + 0, soy - shHalfH - 2,
+        sox - shHalfW - 4, soy + 0,
+      ])
+      .fill({ color: 0x000000, alpha: 0.15 });
+    this.shadow
+      .poly([
+        sox + 0, soy + shHalfH,         // front corner
+        sox + shHalfW, soy + 0,         // right corner
+        sox + 0, soy - shHalfH,         // back corner
+        sox - shHalfW, soy + 0,         // left corner
+      ])
+      .fill({ color: 0x000000, alpha: 0.4 });
 
     // Coordinate system: feet at y=0, head at y ≈ -128 (rig retains the
     // legacy frame; the chibi proportions live in the head being drawn at
