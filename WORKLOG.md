@@ -3126,3 +3126,46 @@ regression.
   Playwright winner-picker regression test.
 - `packages/client/package.json` — added `playwright` dev dep for
   the optional Layer 2 browser smoke.
+
+## 2026-04-30 — S-456: §H1 mobile 375×667 BattleLog/footer overlap fix
+
+**Symptom (iter-78 outstanding #4):** at 375×667, the collapsed
+BattleLog "战报 …" toggle button (`position: fixed`, `bottom: 132`)
+landed at viewport y=494→535. The HandPicker footer (`position:
+absolute`, `bottom: 0`) measured y=498→667. The button's bottom edge
+(535) sat 37 px INSIDE the footer band, z-ordering OVER the
+'点击下方按钮选择石头/剪刀/布' instruction prompt rendered at the
+footer's top. On mid-game frames (R3+ with battlelog text grown past
+the round-1 placeholder), the button completely occluded the prompt
+— the only on-screen RPS instruction was hidden from a first-time
+mobile player.
+
+**Root cause:** `BattleLog.mobileBottomOffset` defaulted to 132 px
+but the actual footer band reserved by `canvasBottomInset = 200` px
+on mobile is much taller (footer measured 169 px tall at 375×667).
+The 132 default was a stale heuristic from before the §H3 picker
+work bumped the footer's content (HandPicker SVG buttons +
+instruction prompt + padding).
+
+**Fix:** Pass an explicit `mobileBottomOffset={canvasBottomInset + 8}`
+from both `Game.tsx` and `MultiGame.tsx` so the toggle button is
+pinned 8 px above the footer's top edge. New layout: button bottom
+at viewport y=459, footer top at y=498 → 39 px gap, no overlap.
+
+**Verification (Playwright @375×667):**
+- Initial frame: battlelog (12, 418→459) vs footer (0, 498→667),
+  prompt (84, 508→532) "点击下方按钮选择石头/剪刀/布" fully visible.
+- Mid-game R4 (after 8 throws, R3.action narration shown in
+  battlelog summary): battlelog rect unchanged, prompt now
+  "你已被淘汰，旁观剩余战斗" fully visible at y=508→532.
+- DOM probe `battlelog.bottom > footer.top` → `false` (no overlap).
+- Desktop 1280×800 unaffected — `mobileBottomOffset` only consumed
+  by `BattleLogMobile`; `BattleLogDesktop` right-rail aside still
+  spans 918→1280, full height 0→800.
+- Tests: `pnpm test` → 148/148 passing.
+
+**Files touched:**
+- `packages/client/src/pages/Game.tsx:710-721` — add explicit
+  `mobileBottomOffset` prop with rationale comment.
+- `packages/client/src/pages/MultiGame.tsx:811-818` — same fix on
+  the multi-room surface (parallel layout).

@@ -707,7 +707,18 @@ export function GamePage({ onExit }: { onExit?: () => void } = {}): JSX.Element 
         ))}
       </div>
 
-      <BattleLog entries={logEntries} />
+      {/* S-456: pin the collapsed BattleLog button ABOVE the footer band
+          (canvasBottomInset px reserved for HandPicker + prompt). The
+          default mobileBottomOffset=132 used to put the button INSIDE
+          that band — at 375×667 the button (y=494→535) overlapped the
+          '点击下方按钮选择石头/剪刀/布' prompt at y=498, hiding the
+          only on-screen instruction once the BattleLog summary text
+          grew past one round. Pinning to canvasBottomInset+8 keeps the
+          two strings on disjoint vertical bands. */}
+      <BattleLog
+        entries={logEntries}
+        mobileBottomOffset={canvasBottomInset + 8}
+      />
 
       {/* §H3 winner-agency overlay — only mounted while it is the local
           human's turn to pick a target/action. The picker resolves the

@@ -808,7 +808,14 @@ export function MultiGamePage(): JSX.Element {
         </div>
       ) : null}
 
-      <BattleLog entries={logEntries} />
+      {/* S-456: pin the collapsed BattleLog button ABOVE the footer band
+          (canvasBottomInset px reserved for HandPicker + prompt). The
+          default mobileBottomOffset=132 used to put the button INSIDE
+          that band, occluding the RPS-instruction prompt on mobile. */}
+      <BattleLog
+        entries={logEntries}
+        mobileBottomOffset={canvasBottomInset + 8}
+      />
 
       {/* Bottom action bar — full width on mobile, canvas-column-only on
           desktop. */}
