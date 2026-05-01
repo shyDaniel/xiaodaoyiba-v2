@@ -380,24 +380,53 @@ export class House {
         : Number.POSITIVE_INFINITY;
     const cap = Math.min(stationCap, Math.max(200, w * 0.78 + 64));
 
-    // Shrink loop: pick the largest fontSize ∈ [4, 16] whose
-    // padded ribbon (renderedW + 16 px outer padding) fits inside
-    // `cap`. The renderedW formula below adds +24 to measuredW, plus
-    // an additional 2 * 8 = 16 px ribbon padding from `padPerSide`
-    // below — total 40 px of safety pad over the raw advance.
-    // §H1 (S-440): floor lowered from 5 → 4 so the worst-case 6p ×
-    // 375 mobile slot ('counter#2' in a ~30-px clamped slot cap
-    // after the lantern-safe-zone push from S-440 computeSpots
-    // clampSlot) can still fit a single-line 'counter#2' if the
-    // shrink loop reaches floor — preferable to letting Pixi
-    // wrap-and-clip past the slot. 4 px is still legible at 1×
-    // device-pixel-ratio on mobile when paired with the +20-px
-    // PLAQUE_TEXT_PAD (S-440) which absorbs bold-fallback
-    // rasterization overshoot.
+    // §H1 (S-442) — Font floor raised back to 9 (legibility floor).
+    // Previous S-440 lowered the floor to 4 to keep long names like
+    // 'counter#2' single-line within a clamped 30-px slot; that fit
+    // the bounds but rendered the text as illegible 4-px glyph soup.
+    // Acceptance now requires fontSize ≥ 9 px for every plaque on
+    // the worst-case 6p × 375 mobile layout. We achieve that by:
+    //
+    //   1. Picking the LARGEST fontSize ∈ [9, 16] whose SINGLE-CHAR
+    //      width fits inside the wrap area (so wordWrap+breakWords
+    //      can always make at least 1-char-per-line progress). For
+    //      any non-degenerate slot (≥ 30 px) and CJK at fontSize=9
+    //      (~9.45 px), this lands at fs=16 except for the worst-case
+    //      clamped 40-px slot, where larger fontSizes' single-char
+    //      widths exceed the inner-content area.
+    //   2. Letting wordWrap+breakWords spread the displayName across
+    //      as many lines as needed (ribbon height grows with line
+    //      count via the wrappedLines.length × lineH formula below).
+    //
+    // The shrink loop now uses the *single widest char* width (not
+    // the natural-advance natural width) as the fit constraint, and
+    // floors at 9 instead of 4. If even the single widest char
+    // can't fit inside the available wrap width at fontSize=9, the
+    // floor stays at 9 (we accept that the rasterized glyph may
+    // touch the ribbon edge — wordWrap still emits a single char
+    // per line, so the texture cannot exceed the ribbon horizontally
+    // by more than the 8-px PLAQUE_TEXT_PAD already accounted for).
+    const widestCharW = (str: string, fs: number): number => {
+      let max = 0;
+      for (const ch of str) {
+        const wch = measurePixiTextW(ch, fs);
+        if (wch > max) max = wch;
+      }
+      return max;
+    };
     let fontSize = 16;
+    // The wrap area available to the rasterized text after subtracting
+    // the ribbon's inner inset (12 px total — 6 px each side from the
+    // innerInset constant below) and TextStyle padding margins.
+    const wrapBudget = (): number => {
+      // The constraint must match the wrapW computed below. Use the
+      // canvas-space cap (which was already reconciled with stationW)
+      // minus the same insets.
+      return Math.max(20, cap - 24 - 16);
+    };
     while (
-      Math.ceil(measurePixiTextW(namePool, fontSize)) + 24 + 16 > cap &&
-      fontSize > 4
+      Math.ceil(widestCharW(namePool, fontSize)) > wrapBudget() &&
+      fontSize > 9
     ) {
       fontSize -= 1;
     }

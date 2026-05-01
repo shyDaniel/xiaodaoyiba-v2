@@ -2838,3 +2838,60 @@ gameRound 2 winner picked PULL_OWN_PANTS_UP — narration
   drop 0.95 factor; updated comment block)
 - `packages/client/src/canvas/stage/House.test.ts` (4 new
   S-441 worst-case texture-extent tests)
+
+---
+
+## Iteration 71 — §H1 6-bot mobile plaque legibility floor (S-442)
+
+**What:** Reverted the S-440 fontSize floor regression (4 → 9) and
+restructured the shrink loop to use single-widest-char width instead
+of natural-advance width. With wordWrap+breakWords already in place
+(S-438) and the ribbon height already growing with line count, long
+displayNames now flow onto multiple lines at a humanly-legible
+fontSize ≥ 9 instead of being shrunk into 4-px illegible glyph soup.
+
+**Why:** Iter-69 verdict observed that on mobile 375×667 in a 6-bot
+room the leftmost back-row plaque '玩家19' and rightmost back-row
+plaque 'counter#2' were correctly clamped within canvas (S-439
+clampSlot success) but the rasterized text was a ≤4-5 px illegible
+glyph soup — equivalent first-user impact ('I can't read my own
+nickname on my phone') as the original clipping bug. Root cause:
+S-440 lowered the font floor to 4 to make worst-case names fit the
+clamped plaqueW; legibility was sacrificed for fit.
+
+**Fix path:**
+1. `House.draw` shrink loop now floors at 9 (legibility floor) and
+   uses widest-char width as the per-line constraint. Long names
+   like 'counter#2' wrap to multiple lines at fs ≥ 9 instead of
+   shrinking to 4 px.
+2. Ribbon height already auto-grows with `wrappedLines.length`
+   (S-438 mechanism preserved).
+3. Two new House.test.ts tests assert (a) Pixi.Text.text strict
+   equality with displayName (no truncation/ellipsis), (b)
+   plaque canvas bounds inside canvas±4 (preserves S-439), and
+   (c) `style.fontSize ≥ 9` on every back-row plaque at 375×355
+   AND 776×616 with WORST_NAMES_S442 = ['玩家19','counter','random',
+   'iron','mirror','counter#2'].
+
+**Live verification:** Drove the canonical repro path (nickname
+'玩家19' → +新建房间 → +加机器人 ×5 yields [counter, random,
+iron, mirror, counter#2] → 开战) at 375×667 mobile and 1280×800
+desktop. Mobile screenshot
+`.playwright-mcp/s442-mobile-6bot-out_quan.png` shows every name
+rendered at large humanly-legible font; 'counter#2' wraps to two
+lines ('coun' / 'ter#2') and '玩家19' renders single-line. Desktop
+screenshot `.playwright-mcp/s442-desktop-6bot.png` confirms no
+regression at the larger viewport — every name on a single line.
+
+**Tests:** `pnpm test` → 144 → 146 (+2 S-442 mobile/desktop
+acceptance tests). `pnpm typecheck` exits 0. `pnpm sim --players 4
+--bots counter,random,iron,mirror --winner-strategy
+random-target+random-action --rounds 50 --seed 42` → tie_rate=0.260
+< 0.30, PULL_OWN_PANTS_UP firing at round 48 ("玩家不慌不忙，把裤
+衩穿了回去") — no engine regression.
+
+**Files touched:**
+- `packages/client/src/canvas/stage/House.ts` (shrink loop:
+  widest-char fit constraint, floor 4 → 9, expanded comment)
+- `packages/client/src/canvas/stage/House.test.ts` (2 new S-442
+  fontSize-floor regression tests for mobile + desktop)

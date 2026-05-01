@@ -337,6 +337,119 @@ describe('§H1 (S-437) plaque ribbon never exceeds stationW on 6p × 375 mobile'
     });
   }
 
+  // §H1 (S-442) — legibility regression. The S-440 commit lowered the
+  // House.draw fontSize floor from 5 → 4 to keep 'counter#2' single-
+  // line inside a clamped 30-px slot; that fit the bounds but rendered
+  // the rasterized text as ≤4-px illegible glyph soup at 375×667
+  // mobile (live verdict iter69). S-442 raises the floor back to 9
+  // (humanly legible) and relies on wordWrap+breakWords to spread
+  // long names across multiple lines (ribbon height grows with the
+  // line count) when a single line wouldn't fit at fontSize ≥ 9.
+  //
+  // This test guards the contract on the WORST-CASE name set
+  // ['玩家19','counter','random','iron','mirror','counter#2'] at the
+  // mobile canvas viewport (375×355): every plaque must (1) carry its
+  // displayName verbatim (no ellipsis, no truncation), (2) keep its
+  // ribbon inside canvas±4 (preserves S-439), and (3) render at
+  // fontSize ≥ 9 (the new legibility floor).
+  test('S-442: 6p × mobile-375 worst-case names render at fontSize ≥ 9 with full displayName', () => {
+    const w = 375;
+    const h = 355;
+    const { left: chromeLeft, right: chromeRight } = computeChromeMargins(w);
+    const { top: pTop, bottom: pBottom } = computePlayableRect(w, h);
+    const spots = computeSpots(6, w, pTop, pBottom, chromeLeft, chromeRight);
+    expect(spots).toHaveLength(6);
+    // Per the brief — '玩家19' as the human nickname plus the canonical
+    // 5-bot strategy disambiguator output [counter, random, iron,
+    // mirror, counter#2] from +加机器人 ×5.
+    const NAMES_S442 = ['玩家19', 'counter', 'random', 'iron', 'mirror', 'counter#2'];
+
+    for (let i = 0; i < spots.length; i++) {
+      const s = spots[i]!;
+      const name = NAMES_S442[i]!;
+      const localStationW = s.stationW / Math.max(0.001, s.scale);
+      const house = new House({
+        ownerId: `id-${i}`,
+        ownerName: name,
+        width: s.houseW,
+        height: s.houseH,
+        stationW: localStationW,
+      });
+
+      // (1) Pixi.Text.text === displayName (no truncation, no ellipsis).
+      const textChild = house.plaque.children.find(
+        (c): c is { text: string; style: { fontSize: number } } & object =>
+          typeof (c as { text?: unknown }).text === 'string' &&
+          typeof (c as { style?: { fontSize?: unknown } }).style?.fontSize ===
+            'number',
+      ) as
+        | ({ text: string; style: { fontSize: number } } & object)
+        | undefined;
+      expect(textChild, `slot=${i} no Pixi.Text child`).toBeDefined();
+      expect(
+        textChild?.text,
+        `slot=${i} name='${name}' text='${textChild?.text}'`,
+      ).toBe(name);
+      expect(textChild?.text).not.toContain('…');
+      expect(textChild?.text).not.toContain('...');
+
+      // (2) Plaque canvas bounds preserved from S-439.
+      const plaqueCanvasW = house.getPlaqueWidth() * s.scale;
+      const plaqueLeft = s.houseX - plaqueCanvasW / 2;
+      const plaqueRight = s.houseX + plaqueCanvasW / 2;
+      expect(
+        plaqueLeft,
+        `slot=${i} name=${name} plaqueLeft=${plaqueLeft.toFixed(2)} (must ≥ 4)`,
+      ).toBeGreaterThanOrEqual(4);
+      expect(
+        plaqueRight,
+        `slot=${i} name=${name} plaqueRight=${plaqueRight.toFixed(2)} (must ≤ ${w - 4})`,
+      ).toBeLessThanOrEqual(w - 4);
+
+      // (3) The new S-442 acceptance: fontSize ≥ 9 (humanly legible).
+      const fs = textChild!.style.fontSize;
+      expect(
+        fs,
+        `slot=${i} name=${name} fontSize=${fs} (must ≥ 9 — S-442 legibility floor)`,
+      ).toBeGreaterThanOrEqual(9);
+    }
+  });
+
+  // §H1 (S-442) — desktop must NOT regress: at 1280×800 / canvas
+  // 776×616 the same worst-case name set is comfortably wide enough
+  // to render at the maximum fontSize=16 on every slot.
+  test('S-442: 6p × desktop-776 worst-case names render at fontSize ≥ 9 with full displayName', () => {
+    const w = 776;
+    const h = 616;
+    const { left: chromeLeft, right: chromeRight } = computeChromeMargins(w);
+    const { top: pTop, bottom: pBottom } = computePlayableRect(w, h);
+    const spots = computeSpots(6, w, pTop, pBottom, chromeLeft, chromeRight);
+    const NAMES_S442 = ['玩家19', 'counter', 'random', 'iron', 'mirror', 'counter#2'];
+
+    for (let i = 0; i < spots.length; i++) {
+      const s = spots[i]!;
+      const name = NAMES_S442[i]!;
+      const localStationW = s.stationW / Math.max(0.001, s.scale);
+      const house = new House({
+        ownerId: `id-${i}`,
+        ownerName: name,
+        width: s.houseW,
+        height: s.houseH,
+        stationW: localStationW,
+      });
+      const textChild = house.plaque.children.find(
+        (c): c is { text: string; style: { fontSize: number } } & object =>
+          typeof (c as { text?: unknown }).text === 'string' &&
+          typeof (c as { style?: { fontSize?: unknown } }).style?.fontSize ===
+            'number',
+      ) as
+        | ({ text: string; style: { fontSize: number } } & object)
+        | undefined;
+      expect(textChild?.text).toBe(name);
+      expect(textChild!.style.fontSize).toBeGreaterThanOrEqual(9);
+    }
+  });
+
   test('every house plaque on 5p × 375 mobile fits inside its slot', () => {
     const w = 375;
     const h = 355;
