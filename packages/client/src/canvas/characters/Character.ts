@@ -69,12 +69,39 @@ const TOP_PANTS_Y_ANKLE = 30;
  *  state changes without rebuilding the whole rig. */
 type MouthShape = 'smile' | 'neutral' | 'shocked' | 'grimace' | 'dead';
 
-/** Procedural hair silhouettes — at least 4 so a 6-player room looks
- *  visually distinct (FINAL_GOAL §H6). The chosen style is locked at
- *  construction time by a hash of the player id. */
-type HairStyle = 'spiky' | 'bowl' | 'ponytail' | 'mohawk';
+/** Procedural hair silhouettes — six distinct silhouettes so a 6-player
+ *  room reads visually distinct from a 1280×800 distance (FINAL_GOAL §H6,
+ *  S-453). Each silhouette is dramatized at gameplay scale: spikes are
+ *  tall jagged points (not 4px nubs), bowl is a dome that covers the
+ *  ears, ponytail trails behind the head with a long visible tail,
+ *  mohawk is a tall narrow column that breaks the 2× body-width line,
+ *  afro is a fat cloud silhouette wider than the head, topknot is a
+ *  visible spherical bun rising above the skull. The chosen style is
+ *  locked at construction time by a hash of the player id. */
+type HairStyle = 'spiky' | 'bowl' | 'ponytail' | 'mohawk' | 'afro' | 'topknot';
 
-const HAIR_STYLES: readonly HairStyle[] = ['spiky', 'bowl', 'ponytail', 'mohawk'] as const;
+const HAIR_STYLES: readonly HairStyle[] = [
+  'spiky',
+  'bowl',
+  'ponytail',
+  'mohawk',
+  'afro',
+  'topknot',
+] as const;
+
+/** Hair color jitter — six base hues so even two players with the same
+ *  silhouette read as visually distinct archetypes. Picked by a second
+ *  axis of the playerId hash so style-color distribution is independent
+ *  (no correlation between e.g. mohawk-always-red). Keep values
+ *  saturated enough to read against dusk-sky background. */
+const HAIR_COLORS: readonly number[] = [
+  0x281810, // black-brown (default v1 hair)
+  0x6a3a18, // chestnut brown
+  0xc88838, // blonde
+  0xb83828, // red/auburn
+  0x404a58, // ash grey
+  0x683890, // anime purple (the cute factor)
+] as const;
 
 /** Deterministic 32-bit FNV-1a → integer for stable hair-style selection. */
 function hashId(id: string): number {
@@ -121,6 +148,11 @@ export class Character {
 
   /** Procedural hair style — frozen at construction time by hash(id). */
   private readonly hairStyle: HairStyle;
+  /** Hair color — frozen at construction time by a *different* axis of
+   *  hash(id) than `hairStyle`, so style and color are independent and
+   *  two players with the same style usually read as different
+   *  archetypes (e.g. one black mohawk + one purple mohawk). */
+  private readonly hairColor: number;
   /** Pupil tint = player accent color, so eyes are uniquely tinted per
    *  player even when sclera/specular are shared. */
   private readonly pupilColor: number;
@@ -161,6 +193,12 @@ export class Character {
     // the same across reconnects but adjacent characters look different.
     const h = hashId(opts.id);
     this.hairStyle = HAIR_STYLES[h % HAIR_STYLES.length] ?? 'spiky';
+    // Hair color is keyed off a *different* hash axis (rotated id hash)
+    // than the style, so the (style, color) joint distribution is close
+    // to uniform — two players with the same silhouette will usually
+    // have different colors and read as different archetypes.
+    this.hairColor =
+      HAIR_COLORS[hashId(opts.id + '#hue') % HAIR_COLORS.length] ?? 0x281810;
     this.pupilColor = playerColor(opts.id);
     // Period ∈ [1.5, 2.5] seconds, phase ∈ [0, 2π).
     this.squashPeriodSec = 1.5 + ((h >>> 8) & 0xff) / 255;
@@ -613,9 +651,12 @@ export class Character {
     le.rect(-11, -104, 2, 2).fill({ color: 0xffffff });
     re.rect(6, -104, 2, 2).fill({ color: 0xffffff });
 
-    // ===== eyebrows (sit just above the eyes — a thin tinted band) =====
-    this.browLeft.rect(-13, -112, 9, 2).fill({ color: palette.hair });
-    this.browRight.rect(4, -112, 9, 2).fill({ color: palette.hair });
+    // ===== eyebrows (sit just above the eyes — match the hair color) =====
+    // Tinting brows to hairColor instead of palette.hair keeps a blonde
+    // or auburn character from sporting black anime-brows; this is a
+    // small detail that adds polish per S-453.
+    this.browLeft.rect(-13, -112, 9, 2).fill({ color: this.hairColor });
+    this.browRight.rect(4, -112, 9, 2).fill({ color: this.hairColor });
 
     // ===== sweat drop (shame) =====
     this.sweat
@@ -625,59 +666,144 @@ export class Character {
     this.sweat.alpha = 0;
   }
 
-  /** Draw one of four procedural hair silhouettes onto `this.hair`. The
-   *  style is chosen by hash(playerId) at construction (FINAL_GOAL §H6
-   *  ≥ 2 silhouettes; we ship 4 so a 6-player room reads visually
-   *  distinct). Each silhouette has a 2-tone shading (lighter band on
-   *  top, base on bottom) so the hair reads three-dimensional. */
+  /** Draw one of six procedural hair silhouettes onto `this.hair`. The
+   *  style is chosen by hash(playerId) at construction (FINAL_GOAL §H6,
+   *  S-453 — six silhouettes so a 6-player room reads visually distinct
+   *  from a 1280×800 distance, not just at a 256×256 zoom). Each
+   *  silhouette deliberately overshoots the skull's bounding circle
+   *  (skull = circle(0, -100, 26), top at y≈-126) so the OUTLINE differs
+   *  between styles even when only ~80px of viewport pixels are
+   *  available per character. The 2-tone shading (lighter band up top,
+   *  base on bottom) sells volume without needing per-pixel detail. */
   private drawHair(style: HairStyle): void {
     const hr = this.hair;
-    const base = palette.hair;
-    const high = lighten(base, 0.25);
+    const base = this.hairColor;
+    const high = lighten(base, 0.32);
+    const shadow = darken(base, 0.35);
     if (style === 'spiky') {
-      // jagged crown — three triangle tufts atop a base cap
-      hr.rect(-24, -120, 48, 12).fill({ color: base });
-      hr.rect(-24, -120, 48, 3).fill({ color: high });
-      hr.poly([-18, -120, -10, -134, -2, -120]).fill({ color: base });
-      hr.poly([-6, -120, 2, -132, 10, -120]).fill({ color: base });
-      hr.poly([6, -120, 14, -136, 22, -120]).fill({ color: base });
+      // Five tall jagged spikes on a base cap. Each spike is ≥ 18px
+      // tall (vs. 14px in the previous draft) and the inter-spike
+      // valleys go all the way down to the cap so the OUTLINE reads
+      // as a row of pointed teeth even when the character is only
+      // 80px tall on screen. Heights are alternated so the silhouette
+      // looks "windswept" rather than a regular saw-tooth.
+      hr.rect(-26, -118, 52, 12).fill({ color: base });
+      hr.rect(-26, -118, 52, 3).fill({ color: high });
+      hr.poly([-26, -118, -22, -118, -18, -140]).fill({ color: base });
+      hr.poly([-18, -118, -14, -118, -10, -148]).fill({ color: base });
+      hr.poly([-10, -118, -6, -118, -2, -136]).fill({ color: base });
+      hr.poly([-2, -118, 2, -118, 6, -150]).fill({ color: base });
+      hr.poly([6, -118, 10, -118, 14, -138]).fill({ color: base });
+      hr.poly([14, -118, 18, -118, 22, -146]).fill({ color: base });
+      hr.poly([22, -118, 26, -118, 28, -132]).fill({ color: base });
+      // tip highlights — a single bright pixel on each spike's leading edge
+      hr.poly([-18, -140, -16, -136, -19, -135]).fill({ color: high });
+      hr.poly([-10, -148, -8, -144, -11, -143]).fill({ color: high });
+      hr.poly([6, -150, 8, -146, 5, -145]).fill({ color: high });
+      hr.poly([14, -138, 16, -134, 13, -133]).fill({ color: high });
+      hr.poly([22, -146, 24, -142, 21, -141]).fill({ color: high });
       // sideburns
-      hr.rect(-24, -110, 5, 10).fill({ color: base });
-      hr.rect(19, -110, 5, 10).fill({ color: base });
+      hr.rect(-26, -110, 5, 10).fill({ color: base });
+      hr.rect(21, -110, 5, 10).fill({ color: base });
     } else if (style === 'bowl') {
-      // smooth bowl cut — round cap with a forehead fringe
-      hr.circle(0, -118, 26).fill({ color: base });
-      hr.circle(0, -119, 26).fill({ color: high, alpha: 0.6 });
-      // mask the bottom half by overlaying skin-color band — but easier
-      // to just draw a rect cutoff:
-      hr.rect(-26, -100, 52, 8).fill({ color: 0, alpha: 0 }); // (transparent — for clarity)
-      // forehead fringe (a darker band so it reads as "hair under bowl")
-      hr.rect(-18, -108, 36, 4).fill({ color: base });
-      hr.rect(-14, -106, 28, 2).fill({ color: high });
-      // sideburns
-      hr.rect(-26, -106, 4, 8).fill({ color: base });
-      hr.rect(22, -106, 4, 8).fill({ color: base });
+      // Bowl cut — a deep dome that sits low over the brows and covers
+      // the ears. The dome is drawn as a solid circle clipped to the
+      // upper half by a transparent base rectangle (Pixi Graphics is
+      // additive so we instead use a wide ellipse + a chin-line cap
+      // strip). The forehead fringe is THICK (10px) so the bowl
+      // silhouette reads even at small sizes.
+      hr.ellipse(0, -118, 32, 22).fill({ color: base });
+      hr.ellipse(0, -120, 32, 18).fill({ color: high, alpha: 0.55 });
+      // forehead fringe — deep, covers the brows
+      hr.rect(-22, -112, 44, 8).fill({ color: base });
+      hr.rect(-18, -106, 36, 2).fill({ color: shadow });
+      // ear-flap drop on each side (the bowl signature)
+      hr.rect(-30, -108, 6, 14).fill({ color: base });
+      hr.rect(24, -108, 6, 14).fill({ color: base });
+      hr.rect(-30, -108, 2, 14).fill({ color: shadow });
+      hr.rect(28, -108, 2, 14).fill({ color: shadow });
     } else if (style === 'ponytail') {
-      // smooth top + a ponytail bulge sticking out the back
-      hr.rect(-22, -120, 44, 14).fill({ color: base });
-      hr.rect(-22, -120, 44, 3).fill({ color: high });
-      hr.rect(-20, -110, 40, 4).fill({ color: base });
-      // ponytail: an offset blob at the back (left if facing right)
-      hr.ellipse(-26, -100, 7, 14).fill({ color: base });
-      hr.ellipse(-26, -104, 4, 8).fill({ color: high, alpha: 0.7 });
+      // Smooth crown + a LONG ponytail trailing down past the
+      // shoulders. The ponytail blob is ~24px tall and sits offset to
+      // the player's left (facing-direction independent — the rig is
+      // mirrored at the container level for facing=-1, so the ponytail
+      // always sticks out behind the head from the camera's POV).
+      // The tail is drawn with a darker bound stripe (the hairtie) so
+      // it reads as "ponytail" rather than "lump of hair".
+      hr.rect(-24, -120, 48, 14).fill({ color: base });
+      hr.rect(-24, -120, 48, 3).fill({ color: high });
+      hr.rect(-22, -110, 44, 4).fill({ color: base });
+      // tail proper — long ellipse hanging down behind the skull
+      hr.ellipse(-30, -86, 8, 24).fill({ color: base });
+      hr.ellipse(-30, -94, 4, 14).fill({ color: high, alpha: 0.7 });
+      // hairtie — a 3px band at the top of the tail
+      hr.rect(-34, -106, 8, 3).fill({ color: shadow });
+      // small bow on top of the hairtie (cute detail at gameplay scale)
+      hr.poly([-34, -108, -30, -112, -26, -108]).fill({ color: 0xe85a90 });
       // sideburns
-      hr.rect(-22, -108, 4, 6).fill({ color: base });
-      hr.rect(18, -108, 4, 6).fill({ color: base });
+      hr.rect(-24, -108, 4, 6).fill({ color: base });
+      hr.rect(20, -108, 4, 6).fill({ color: base });
+    } else if (style === 'mohawk') {
+      // Tall narrow column running front-to-back along the centerline.
+      // The strip is 14px wide and 44px tall (vs. 12×30 previously) so
+      // the silhouette breaks well above the head's bounding circle —
+      // the character reads as taller than the others, which is what
+      // sells "mohawk" at distance. Sides are visibly shaved (skin
+      // shows through) with a thin stubble band for texture.
+      hr.rect(-7, -150, 14, 44).fill({ color: base });
+      hr.rect(-7, -150, 14, 5).fill({ color: high });
+      // notched front — give the strip a swept-back leading edge
+      hr.poly([-7, -150, -7, -134, -3, -150]).fill({ color: base });
+      hr.poly([7, -150, 7, -136, 3, -150]).fill({ color: shadow });
+      // shaved sides — stubble band above the ears
+      hr.rect(-24, -110, 17, 3).fill({ color: shadow });
+      hr.rect(7, -110, 17, 3).fill({ color: shadow });
+      hr.rect(-24, -107, 17, 1).fill({ color: base, alpha: 0.4 });
+      hr.rect(7, -107, 17, 1).fill({ color: base, alpha: 0.4 });
+      // minimal sideburns
+      hr.rect(-24, -108, 3, 6).fill({ color: base });
+      hr.rect(21, -108, 3, 6).fill({ color: base });
+    } else if (style === 'afro') {
+      // Big round cloud silhouette — wider than the head and tall.
+      // Drawn as a stack of overlapping circles to get the bumpy
+      // outline characteristic of an afro, rather than a smooth dome.
+      // The whole thing extends from y=-148 (well above the skull
+      // top at -126) to y=-100 and 36px wide on each side.
+      hr.circle(-22, -116, 14).fill({ color: base });
+      hr.circle(-12, -128, 16).fill({ color: base });
+      hr.circle(2, -132, 18).fill({ color: base });
+      hr.circle(16, -126, 16).fill({ color: base });
+      hr.circle(24, -114, 12).fill({ color: base });
+      hr.circle(-18, -104, 10).fill({ color: base });
+      hr.circle(20, -102, 10).fill({ color: base });
+      // top highlights — three small bright caps on the upper bumps
+      hr.circle(-12, -132, 5).fill({ color: high, alpha: 0.6 });
+      hr.circle(2, -136, 6).fill({ color: high, alpha: 0.6 });
+      hr.circle(16, -130, 5).fill({ color: high, alpha: 0.6 });
+      // forehead fringe peeking out under the volume
+      hr.rect(-16, -110, 32, 4).fill({ color: shadow });
     } else {
-      // mohawk — narrow strip along the centerline, tall
-      hr.rect(-6, -136, 12, 30).fill({ color: base });
-      hr.rect(-6, -136, 12, 4).fill({ color: high });
-      // shaved sides — leave a thin band of stubble color above the ears
-      hr.rect(-22, -110, 16, 3).fill({ color: darken(base, 0.3) });
-      hr.rect(6, -110, 16, 3).fill({ color: darken(base, 0.3) });
-      // sideburns are minimal for mohawk
-      hr.rect(-22, -108, 3, 6).fill({ color: base });
-      hr.rect(19, -108, 3, 6).fill({ color: base });
+      // topknot — slick-back base with a visible spherical bun rising
+      // above the crown. The bun is ~16px diameter sitting on a 4px
+      // tied stem, which gives a clear "ball on a stick" silhouette
+      // that is unmistakable next to spiky/mohawk/afro.
+      hr.rect(-22, -118, 44, 14).fill({ color: base });
+      hr.rect(-22, -118, 44, 3).fill({ color: high });
+      // sleek pulled-back strands — diagonal stripes on the cap
+      hr.rect(-20, -114, 4, 10).fill({ color: shadow, alpha: 0.4 });
+      hr.rect(-10, -114, 4, 10).fill({ color: shadow, alpha: 0.4 });
+      hr.rect(0, -114, 4, 10).fill({ color: shadow, alpha: 0.4 });
+      hr.rect(10, -114, 4, 10).fill({ color: shadow, alpha: 0.4 });
+      // tied stem
+      hr.rect(-3, -126, 6, 8).fill({ color: shadow });
+      // bun — a fat circle with highlight cap
+      hr.circle(0, -134, 10).fill({ color: base });
+      hr.circle(-2, -136, 5).fill({ color: high, alpha: 0.7 });
+      // wisp escaping from the bun (cute detail)
+      hr.poly([8, -138, 14, -142, 12, -136]).fill({ color: base });
+      // sideburns
+      hr.rect(-22, -108, 3, 8).fill({ color: base });
+      hr.rect(19, -108, 3, 8).fill({ color: base });
     }
   }
 }

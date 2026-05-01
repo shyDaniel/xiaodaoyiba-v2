@@ -3169,3 +3169,38 @@ at viewport y=459, footer top at y=498 → 39 px gap, no overlap.
   `mobileBottomOffset` prop with rationale comment.
 - `packages/client/src/pages/MultiGame.tsx:811-818` — same fix on
   the multi-room surface (parallel layout).
+
+---
+
+## Iteration 82 — S-453 commit Character.ts hair-style/color work (S-457)
+
+**What:** Committed the in-flight Character.ts diff that the iter-81
+worker left uncommitted in the working tree. The dev server has been
+rendering with these edits in memory (judge-iter81-desk-1280-6p-init
+screenshots all depend on them); without committing, a fresh
+checkout would regress §H6 to the 4-style monochrome silhouette
+baseline and the eval iter-78 finding ("all six characters look
+visually identical") would re-surface.
+
+**Symptom (iter-81 outstanding #1):** `git status` showed `M
+packages/client/src/canvas/characters/Character.ts` with +180/-54
+lines uncommitted. The diff added two new HairStyle members
+(`'afro' | 'topknot'`, extending the union from 4→6), a 6-hue
+HAIR_COLORS readonly array (black-brown / chestnut / blonde /
+red-auburn / ash-grey / anime-purple), and dramatized the existing
+spiky/bowl/ponytail/mohawk silhouettes to read distinct at gameplay
+scale (80 px viewport pixels per character at 1280×800, 6 players).
+Hair color is keyed off a separate hash axis (`hashId(id + '#hue')`)
+so style and color are independent — two players sharing a
+silhouette will usually have different hues.
+
+**Fix:** Verified the diff (lints clean — all `darken`/`lighten`
+references are local helpers in the file, no missing imports), ran
+the test gate (`pnpm test` → 148/148 passing across all 9 test
+files), ran the build gate (`pnpm build` → server + client OK,
+client gzip = 177.41 KB < 300 KB acceptance ceiling), and committed
+with a descriptive S-453 message.
+
+**Files touched:**
+- `packages/client/src/canvas/characters/Character.ts` — committed
+  the iter-81 in-flight diff (+180/-54 lines).
