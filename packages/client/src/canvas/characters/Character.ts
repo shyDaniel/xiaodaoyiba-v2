@@ -36,8 +36,9 @@
 // up to 6% and lets the character bob slightly — sells "alive" without
 // distracting from the gameplay.
 
-import { Container, Graphics } from 'pixi.js';
+import { Container, Graphics, Sprite, type Texture } from 'pixi.js';
 import { palette, playerColor } from '../../palette.js';
+import { loadSpriteWithFallback } from '../loadSpriteWithFallback.js';
 
 export type CharacterState =
   | 'IDLE'
@@ -62,6 +63,12 @@ export interface CharacterOptions {
    *  to a ~96-px-tall sprite on screen — Steam-indie pacing, more breathing
    *  room around each character (FINAL_GOAL §K5: 96×96 chars). */
   scale?: number;
+  /** v6 §K6 (S-512) — slot index in the room (p0..p5). Used to look up a
+   *  user-supplied sprite at `assets/sprites/characters/p<slotIndex>-<state>-<frame>.png`.
+   *  When omitted, the override probe is skipped and the procedural rig is
+   *  always used. The owner (GameStage) passes the player's index in the
+   *  turn order; this keeps the override naming stable across reconnects. */
+  slotIndex?: number;
 }
 
 /** v6 §K5 (S-508): map internal 128-unit art-space → 96-px display height
@@ -163,6 +170,15 @@ export class Character {
   private readonly browRight: Graphics;
   private readonly blush: Graphics;
   private readonly sweat: Graphics;
+
+  /** v6 §K6 (S-512) — optional user-supplied PNG sprite. When non-null,
+   *  the procedural rig (`art`) is hidden and this Sprite is rendered in
+   *  its place. The sprite's anchor is (0.5, 1.0) so its bottom-center
+   *  sits on the character's feet line (y=0 in view-space). The override
+   *  is loaded asynchronously after construction; until it resolves, the
+   *  procedural rig stays visible — so even on a slow network the user
+   *  never sees a missing-sprite gap. */
+  private overrideSprite: Sprite | null = null;
 
   /** Procedural hair style — frozen at construction time by hash(id). */
   private readonly hairStyle: HairStyle;
@@ -278,6 +294,64 @@ export class Character {
     // Start with top-pants at waist (covering briefs).
     this.topPants.y = TOP_PANTS_Y_WAIST;
     this.setMouth('smile');
+
+    // v6 §K6 (S-512) — kick off the user-asset probe in the background.
+    // If the user has dropped a PNG at assets/sprites/characters/p<slot>-
+    // idle-0.png, swap the procedural rig for the user's art on the next
+    // tick after the texture loads. Until then, the procedural rig is
+    // visible (no missing-sprite gap).
+    if (typeof opts.slotIndex === 'number' && opts.slotIndex >= 0) {
+      void this.tryAttachOverride(opts.slotIndex);
+    }
+  }
+
+  /** Probe `assets/sprites/characters/p<slot>-idle-0.png`. On success,
+   *  replace the procedural rig with the user's PNG. On failure (most
+   *  common case — user hasn't dropped art), leave the procedural rig
+   *  in charge. Never throws. Idempotent. */
+  private async tryAttachOverride(slotIndex: number): Promise<void> {
+    const tex = await loadSpriteWithFallback(
+      `characters/p${slotIndex}-idle-0`,
+    );
+    if (!tex) return;
+    this.attachOverrideTexture(tex);
+  }
+
+  /** Public hook so tests + tooling can swap the procedural rig for an
+   *  arbitrary Texture without going through the loader. The caller owns
+   *  the Texture's lifecycle. Bottom-center anchor (0.5, 1.0) lines the
+   *  sprite's feet up with the character's gameplay-y origin. */
+  attachOverrideTexture(tex: Texture): void {
+    // Replace any prior override so calling twice with a different texture
+    // (e.g. hot-reload during dev) ends up with exactly one Sprite.
+    if (this.overrideSprite) {
+      this.overrideSprite.destroy();
+      this.overrideSprite = null;
+    }
+    const sprite = new Sprite(tex);
+    sprite.anchor.set(0.5, 1.0);
+    // Match the procedural rig's display height (~96 px at scale=1) so
+    // user art slots into existing layout numbers without retuning.
+    // Source canvas is expected to be 96×128 per the .gitkeep contract;
+    // if it isn't, scale to fit a 96-px target height while preserving
+    // aspect ratio.
+    if (tex.height > 0) {
+      const targetH = 96;
+      const k = targetH / tex.height;
+      sprite.scale.set(k, k);
+    }
+    this.view.addChild(sprite);
+    this.overrideSprite = sprite;
+    // Hide the procedural rig — keep it in the tree so existing tweens
+    // and state machines still work (their effects are imperceptible
+    // when art.visible=false; the next override-clear flips it back).
+    this.art.visible = false;
+  }
+
+  /** True iff a user-supplied PNG override is currently active. Mainly for
+   *  tests + dev tooling — gameplay code shouldn't need to branch on this. */
+  hasOverrideSprite(): boolean {
+    return this.overrideSprite !== null;
   }
 
   setState(state: CharacterState): void {

@@ -1,0 +1,15 @@
+# Drop hand-drawn / AI-generated house sprite PNGs here.
+#
+# Naming convention (FINAL_GOAL §K6):
+#   <playerSlot>-house.png       e.g. p0-house.png
+#   <playerSlot>                  p0..p5 (slot in turn order)
+#
+# Anchor convention: the house's GROUND LINE (the bottom of the building
+# where it meets the iso ground tile) should sit on the BOTTOM CENTER of
+# the PNG canvas. The loader uses anchor (0.5, 1.0). Recommended canvas
+# size: 192×168 (matches the §K5 native dimensions).
+#
+# Files dropped here are picked up automatically by loadSpriteWithFallback().
+# A PNG at p0-house.png replaces the procedural House rig for player p0
+# (door, windows, plaque, etc.). Missing PNG ⇒ procedural rig stays.
+# See README.md "Drop in your own art" for details.

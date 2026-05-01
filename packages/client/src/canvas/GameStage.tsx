@@ -303,7 +303,8 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
 
         // Initial player layout (uses the snapshot in the closure; the
         // player-update effect below will reconcile after this).
-        for (const p of players) {
+        for (let i = 0; i < players.length; i++) {
+          const p = players[i]!;
           const house = new House({
             ownerId: p.id,
             ownerName: p.nickname,
@@ -313,6 +314,8 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
             // the first layout pass runs.
             width: 192,
             height: 168,
+            // v6 §K6 (S-512) — turn-order slot for art-asset hot-swap.
+            slotIndex: i,
           });
           gameplayLayer.addChild(house.view);
           houses.set(p.id, house);
@@ -322,6 +325,8 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
             nickname: p.nickname,
             facing: 1,
             scale: 1.0,
+            // v6 §K6 (S-512) — turn-order slot for art-asset hot-swap.
+            slotIndex: i,
           });
           if (p.stage === 'ALIVE_PANTS_DOWN') ch.setPantsDown(true);
           if (p.stage === 'DEAD') ch.setState('DEAD');
@@ -420,7 +425,8 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
     if (!refs) return;
     // Add new players, update existing
     const seen = new Set<string>();
-    for (const p of players) {
+    for (let i = 0; i < players.length; i++) {
+      const p = players[i]!;
       seen.add(p.id);
       let ch = refs.characters.get(p.id);
       if (!ch) {
@@ -431,6 +437,8 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
           // overwritten by layoutPlayers' house.resize() call.
           width: 192,
           height: 168,
+          // v6 §K6 (S-512) — turn-order slot for art-asset hot-swap.
+          slotIndex: i,
         });
         refs.gameplayLayer.addChild(house.view);
         refs.houses.set(p.id, house);
@@ -439,6 +447,8 @@ export function GameStage({ players, controllerRef, onReady }: GameStageProps): 
           nickname: p.nickname,
           facing: 1,
           scale: 1.0,
+          // v6 §K6 (S-512) — turn-order slot for art-asset hot-swap.
+          slotIndex: i,
         });
         refs.gameplayLayer.addChild(ch.view);
         refs.characters.set(p.id, ch);

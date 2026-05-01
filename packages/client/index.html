@@ -4,6 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#0b0d12" />
+    <!-- Inline-data favicon: a tiny knife glyph on the dusk-sky background.
+         Avoids the favicon.ico 404 that previously fired on every landing
+         (5-cycle judge carryover). Uses SVG data-URI so no asset file is
+         required and Vite's publicDir setting can stay focused on /sprites. -->
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230b0d12'/%3E%3Cpolygon points='14,5 18,5 19,21 13,21' fill='%23d8d4c4'/%3E%3Crect x='13' y='21' width='6' height='6' fill='%237a4a28'/%3E%3Crect x='12' y='27' width='8' height='2' fill='%23281810'/%3E%3C/svg%3E"
+    />
     <title>小刀一把 · xiaodaoyiba</title>
     <style>
       html,

@@ -52,6 +52,62 @@ downgrade breaches to stderr warnings. See
 seed-42 sim — the smallest CI invocation that proves both halves of the
 game (matchmaking + round engine) work end-to-end.
 
+## Drop in your own art
+
+The procedural Character + House sprites (drawn entirely with PixiJS Graphics)
+are the production fallback — the game is fully playable without any PNG
+assets. But if you've drawn (or AI-generated) art for a specific player slot,
+you can drop a PNG into `assets/sprites/` and the loader picks it up on the
+next page refresh — **no build step required**.
+
+### Naming convention (FINAL_GOAL §K6)
+
+```
+assets/sprites/characters/p<slot>-idle-0.png   e.g. p0-idle-0.png  (96 × 128)
+assets/sprites/houses/p<slot>-house.png        e.g. p0-house.png   (192 × 168)
+```
+
+`<slot>` is `p0`..`p5` — the player's index in the room's turn order.
+
+### Anchor convention
+
+| Role       | Anchor          | What that means                                         |
+| ---------- | --------------- | ------------------------------------------------------- |
+| character  | bottom-center   | the character's **feet** sit on the bottom edge of the PNG canvas |
+| house      | bottom-center   | the building's **ground line** (where the wall meets the iso ground tile) sits on the bottom edge |
+
+Both use Pixi `anchor.set(0.5, 1.0)`. The loader rescales each sprite to
+match the procedural rig's display height (96 px for characters, the
+layout-driven house height for buildings), so an off-spec aspect ratio
+just gets letterboxed; off-spec anchor placement clips at the wrong line.
+
+### Workflow
+
+1. **Bootstrap reference placeholders** (optional — gives you known-good
+   filenames to overwrite):
+   ```bash
+   node scripts/gen-sprites.mjs        # writes 12 placeholder PNGs (p0..p5 × characters/houses)
+   node scripts/gen-sprites.mjs --force # overwrite existing files
+   ```
+2. **Replace** the placeholder PNG at e.g.
+   `assets/sprites/characters/p0-idle-0.png` with your own art.
+3. `pnpm dev` — refresh the browser. The procedural rig for that slot is
+   automatically replaced by your PNG.
+4. **Missing PNG ⇒ procedural rig stays.** No errors, no console noise — the
+   loader silently falls back to the built-in rig. So you can ship art
+   incrementally; players you haven't drawn for keep the procedural look.
+
+### How the loader works
+
+Vite's `publicDir` is pointed at the repo-root `assets/` directory, so a PNG
+at `assets/sprites/characters/p0-idle-0.png` is served at
+`/sprites/characters/p0-idle-0.png` in dev AND copied verbatim to
+`packages/client/dist/sprites/...` on `pnpm build`.
+
+`packages/client/src/canvas/loadSpriteWithFallback.ts` HEAD-probes the URL
+before calling Pixi's `Assets.load`, so missing files don't trigger Pixi's
+internal error logger — the procedural rig just stays in charge.
+
 ## Status
 
 The shared engine, server (matchmaking + rooms over Socket.IO), and headless

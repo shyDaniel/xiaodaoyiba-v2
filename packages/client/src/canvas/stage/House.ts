@@ -10,11 +10,14 @@ import {
   CanvasTextMetrics,
   Container,
   Graphics,
+  Sprite,
   Text,
   TextStyle,
+  type Texture,
 } from 'pixi.js';
 import { palette, playerColor } from '../../palette.js';
 import { ISO_COS, ISO_SIN, worldToScreen } from './iso.js';
+import { loadSpriteWithFallback } from '../loadSpriteWithFallback.js';
 
 /** Token-aware wrap. Splits text into "tokens" — runs of identical
  *  break-class — where:
@@ -110,6 +113,11 @@ export interface HouseOptions {
    *  legacy "max(180, body+pad)" sizing applies — fine for 1..4p but
    *  the caller must supply stationW for 5p/6p. */
   stationW?: number;
+  /** v6 §K6 (S-512) — slot index in the room (p0..p5). Used to look up a
+   *  user-supplied house sprite at `assets/sprites/houses/p<slotIndex>-house.png`.
+   *  When omitted, the override probe is skipped and the procedural rig
+   *  is always used. */
+  slotIndex?: number;
 }
 
 export class House {
@@ -138,6 +146,14 @@ export class House {
    *  houses so they don't clip the bottom-sheet). */
   private opts: HouseOptions;
 
+  /** v6 §K6 (S-512) — optional user-supplied PNG sprite. When non-null,
+   *  the procedural body+damage Graphics are hidden and this Sprite is
+   *  rendered in their place. The plaque ribbon is intentionally NOT
+   *  hidden — the user's sprite replaces the BUILDING art, but the name
+   *  plaque is part of the gameplay UI (it announces which player owns
+   *  the house) and stays consistent across asset swaps. */
+  private overrideSprite: Sprite | null = null;
+
   constructor(opts: HouseOptions) {
     this.ownerId = opts.ownerId;
     this.opts = opts;
@@ -149,6 +165,57 @@ export class House {
     this.view.addChild(this.damage);
     this.view.addChild(this.plaque);
     this.draw(opts);
+
+    // v6 §K6 (S-512) — kick off the user-asset probe in the background.
+    // If assets/sprites/houses/p<slot>-house.png exists, replace the
+    // procedural building art with it on the next tick after the
+    // texture loads. Until then, the procedural rig is visible.
+    if (typeof opts.slotIndex === 'number' && opts.slotIndex >= 0) {
+      void this.tryAttachOverride(opts.slotIndex);
+    }
+  }
+
+  /** Probe `assets/sprites/houses/p<slot>-house.png`. On success,
+   *  replace the procedural rig with the user's PNG. On failure (most
+   *  common case), leave the procedural rig in charge. */
+  private async tryAttachOverride(slotIndex: number): Promise<void> {
+    const tex = await loadSpriteWithFallback(`houses/p${slotIndex}-house`);
+    if (!tex) return;
+    this.attachOverrideTexture(tex);
+  }
+
+  /** Public hook so tests + tooling can swap the procedural rig for an
+   *  arbitrary Texture. Bottom-center anchor (0.5, 1.0) lines the
+   *  building's ground line up with the house's gameplay-y origin
+   *  (the iso ground tile under the house). */
+  attachOverrideTexture(tex: Texture): void {
+    if (this.overrideSprite) {
+      this.overrideSprite.destroy();
+      this.overrideSprite = null;
+    }
+    const sprite = new Sprite(tex);
+    sprite.anchor.set(0.5, 1.0);
+    // Match the procedural rig's display height (~168 px at native
+    // 192×168) so user art slots into existing layout numbers without
+    // retuning. If the user's art has a different aspect ratio we
+    // preserve it and just match the height.
+    if (tex.height > 0) {
+      const targetH = this.opts.height;
+      const k = targetH / tex.height;
+      sprite.scale.set(k, k);
+    }
+    // Add BEHIND the plaque (which is the last child of `view`) so the
+    // plaque ribbon stays on top of the user's house art. The simplest
+    // way is to insert at the body's index, then hide body + damage.
+    const plaqueIdx = this.view.getChildIndex(this.plaque);
+    this.view.addChildAt(sprite, plaqueIdx);
+    this.overrideSprite = sprite;
+    this.body.visible = false;
+    this.damage.visible = false;
+  }
+
+  hasOverrideSprite(): boolean {
+    return this.overrideSprite !== null;
   }
 
   /** Reduce house HP and draw cracks. */

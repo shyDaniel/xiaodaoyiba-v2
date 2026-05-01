@@ -1,0 +1,17 @@
+# Drop hand-drawn / AI-generated character sprite PNGs here.
+#
+# Naming convention (FINAL_GOAL §K6):
+#   <playerSlot>-<state>-<frame>.png   e.g. p0-idle-0.png
+#   <playerSlot>                       p0..p5 (slot in turn order)
+#   <state>                            idle | rush | strike | pull | shame | dead | cheer
+#   <frame>                            0-indexed frame for animated states
+#
+# Anchor convention: the character's FEET should sit on the BOTTOM CENTER
+# of the PNG canvas. The loader uses anchor (0.5, 1.0) so the bottom edge
+# aligns to the gameplay y-coordinate. Recommended canvas size: 96×128
+# (matches the §K5 96-px display height; head clears the top of the canvas).
+#
+# Files dropped here are picked up automatically by loadSpriteWithFallback().
+# A PNG at p0-idle-0.png replaces the procedural Character rig for player p0.
+# Missing PNG ⇒ procedural rig stays. No build step required — drop the
+# file, refresh the browser. See README.md "Drop in your own art" for details.

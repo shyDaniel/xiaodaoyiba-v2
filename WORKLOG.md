@@ -3602,3 +3602,99 @@ to 192/120.
   band — the Steam-indie pacing the brief asks for, replacing
   the 2010-prototype "boxes fill the screen" feel.
 
+---
+
+## Iteration 98 — §K6 art-asset hot-swap pipeline (S-512)
+
+**What:** Shipped the FINAL_GOAL §K6 drop-in art pipeline plus a
+side-fix for the favicon 404 that had been carrying over for 5
+judge cycles. Users can now drop a PNG into
+`assets/sprites/characters/p<slot>-idle-0.png` (or
+`assets/sprites/houses/p<slot>-house.png`), refresh the browser,
+and see their art replace the procedural rig — no build step,
+no console errors when the file is absent.
+
+**Implementation:**
+- `packages/client/src/canvas/loadSpriteWithFallback.ts` — the
+  loader. HEAD-probes the URL first (avoids Pixi's noisy 404
+  logger), then calls `Assets.load()` on success. Returns `null`
+  on absent / invalid bytes / network error — never throws.
+  Probe + load are dependency-injected so the unit test can
+  exercise both branches without spinning up Pixi or fetch.
+- `packages/client/src/canvas/loadSpriteWithFallback.test.ts` —
+  7 tests, both branches (PNG-present returns texture; PNG-absent
+  paths all return null and skip the load call when the probe
+  failed).
+- `packages/client/vite.config.ts` — `publicDir` rebased to the
+  repo-root `assets/` directory so PNGs at
+  `assets/sprites/characters/p0-idle-0.png` are served at
+  `/sprites/characters/p0-idle-0.png` in dev AND copied verbatim
+  to the dist bundle on `pnpm build`.
+- `packages/client/src/canvas/characters/Character.ts` — added
+  `slotIndex?: number` ctor opt, `overrideSprite: Sprite | null`
+  field, and `tryAttachOverride()` / `attachOverrideTexture()` /
+  `hasOverrideSprite()` methods. When a PNG loads, the procedural
+  `art` Container is hidden and a Sprite (anchor 0.5, 1.0; rescaled
+  so display height = 96 px) is added under `view`, preserving
+  every existing tween / state-machine call site.
+- `packages/client/src/canvas/stage/House.ts` — same shape, but
+  the override is added behind the plaque and rescaled to the
+  layout-driven `opts.height`; both `body` and `damage` are
+  hidden when the override attaches.
+- `packages/client/src/canvas/GameStage.tsx` — both construction
+  paths (initial loop + reconcile loop) now thread `slotIndex: i`
+  into Character + House.
+- `scripts/gen-sprites.mjs` — zero-dep PNG encoder (raw deflate
+  + CRC chunks via `node:zlib`) that emits 12 reference
+  placeholder PNGs (6 slots × 2 roles) to give artists known-good
+  filenames. Opt-in (not auto-run) so the procedural rig stays
+  default; gen-sprites is only invoked when the user wants
+  ready-to-overwrite filenames.
+- `assets/sprites/characters/.gitkeep`,
+  `assets/sprites/houses/.gitkeep` — directory anchors with the
+  naming + anchor convention inline so first-time contributors
+  can find the spec without bouncing to README.
+- `README.md` — new "## Drop in your own art" section with the
+  naming convention table, anchor convention table, and the
+  refresh-no-build workflow.
+- `packages/client/index.html` — inline-SVG data-URI favicon
+  (knife glyph on dusk-sky background) replacing the implicit
+  `/favicon.ico` request. Kills the 5-cycle 404 carryover; no
+  asset file required, so Vite's `publicDir` stays focused on
+  `/sprites/`.
+
+**Verification:**
+- `pnpm test` — shared 79/79, server 21/21, client **177/177**
+  (was 170; +7 new loader tests). 277 total green.
+- `pnpm build` — clean. tsc --noEmit clean. Pixi's
+  `dynamic-import-also-static-import` warning is benign (Vite
+  message: "dynamic import will not move module into another
+  chunk").
+- Loader contract — both branches exercised under jsdom: PNG
+  present (probe→true, load→texture) returns the texture;
+  PNG absent (probe→false) returns null without invoking load.
+
+**Observations:**
+- The override pattern preserves the existing scene tree and
+  state machines completely; the procedural rig sits hidden
+  under `art.visible = false` (Character) or `body.visible =
+  false; damage.visible = false` (House), so banner / crown /
+  damage-tier transitions still work even when a PNG is on
+  display — the art swap is *visual only*. This was the cheapest
+  way to land the override without rewriting Character.ts's
+  ~900-line poly geometry.
+- The HEAD probe is essential: Pixi's `Assets.load` logs a noisy
+  WHATWG-style error to the console on 404, which would spam the
+  log for every player slot that hasn't been drawn yet. The
+  probe lets the loader silently fall back to procedural in the
+  expected steady state (most rooms have 2-6 procedural rigs and
+  zero PNGs).
+- Anchor (0.5, 1.0) is the right choice for both roles — it
+  mirrors the procedural rig's coordinate system (feet at y=0
+  for characters; ground line at the bottom of the iso plinth
+  for houses) so off-spec aspect ratios just letterbox instead
+  of clipping at the wrong line.
+- Bundle size (gzip 342 KB) is dominated by Pixi.js (≈300 KB);
+  this iteration adds ~1 KB net and was already the steady-state
+  baseline before §K6.
+
